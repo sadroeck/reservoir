@@ -1,14 +1,9 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+mod error;
+mod tx_id_log;
+mod write_ahead_log;
+mod write_handle;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::*;
+pub use tx_id_log::*;
+pub use write_ahead_log::*;
+pub use write_handle::WriteHandle;
