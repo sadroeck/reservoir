@@ -1,3 +1,3 @@
-mod ring_buffer;
+mod buffer_pool;
 
-pub use ring_buffer::*;
+pub use buffer_pool::*;
