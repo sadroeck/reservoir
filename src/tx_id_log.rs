@@ -1,10 +1,14 @@
 use crate::write_ahead_log::TransactionId;
+use flume::Sender;
+use std::time::Duration;
 use tracing::info;
+
+const MAX_ID_LOG_BUFFER_SIZE: usize = 4096;
 
 /// A cheap to clone handle to commit serialized transaction IDs to the secondary log.
 #[derive(Clone)]
 pub struct TxIdLogHandle {
-    tx: flume::Sender<TransactionId>,
+    tx: Sender<TransactionId>,
 }
 
 impl TxIdLogHandle {
@@ -16,24 +20,25 @@ impl TxIdLogHandle {
 
 /// Task to write the committed transaction IDs to the secondary log,
 /// on a dedicated interval in the background.
-pub struct AsyncTxIdTask {
-    /// Interval at which to flush the transaction IDs to the secondary log.
-    flush_interval: std::time::Duration,
-}
+pub struct AsyncTxIdTask;
 
 impl AsyncTxIdTask {
-    pub fn run(self) -> TxIdLogHandle {
-        let (tx, rx) = flume::bounded(4096);
+    pub fn run(flush_interval: Duration) -> TxIdLogHandle {
+        let (tx, rx) = flume::bounded(MAX_ID_LOG_BUFFER_SIZE);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(async move {
-            let mut interval = tokio::time::interval(self.flush_interval);
+            let mut interval = tokio::time::interval(flush_interval);
             loop {
                 interval.tick().await;
-                while let Ok(id) = rx.try_recv() {
-                    info!("Flushing transaction ID: {id}");
+                'ids: loop {
+                    match rx.try_recv() {
+                        Ok(id) => info!("Flushing transaction ID: {id}"),
+                        Err(flume::TryRecvError::Empty) => continue 'ids,
+                        Err(flume::TryRecvError::Disconnected) => return,
+                    }
                 }
             }
         });
