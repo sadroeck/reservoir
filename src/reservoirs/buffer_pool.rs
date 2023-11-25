@@ -99,8 +99,9 @@ unsafe impl Send for PoolSegment {}
 
 impl Drop for PoolSegment {
     fn drop(&mut self) {
+        let start_offset = self.buffer_start as usize - self.pool.buffer.as_ptr() as usize;
         let mut alloc = self.pool.alloc.lock().unwrap();
-        alloc.free_range(self.buffer_start as usize..self.buffer_start as usize + self.size);
+        alloc.free_range(start_offset..start_offset + self.size);
     }
 }
 
@@ -166,5 +167,67 @@ impl StorageLayer for BufferPool {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::StorageLayer;
+    use futures_util::FutureExt;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn test_single_buffer() {
+        let pool = BufferPool::new(11);
+        let payload = b"Hello world";
+        {
+            let mut writer = pool
+                .get_write_buffer(payload.len())
+                .await
+                .expect("Could not allocate buffer");
+            writer
+                .write_all(payload)
+                .await
+                .expect("Could not write payload");
+        }
+        assert_eq!(&pool.buffer[0..payload.len()], payload);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_buffers_unsaturated() {
+        let payload = [42u8, 42u8, 42u8, 42u8];
+        let pool = BufferPool::new(10 * payload.len());
+        {
+            let mut segments = vec![];
+            for _ in 0..10 {
+                let mut writer = pool
+                    .get_write_buffer(payload.len())
+                    .await
+                    .expect("Could not allocate buffer");
+                writer
+                    .write_all(&payload)
+                    .await
+                    .expect("Could not write payload");
+                segments.push(writer);
+            }
+        }
+        assert_eq!(pool.buffer, vec![42u8; 10 * payload.len()]);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_buffers_saturated() {
+        let pool = BufferPool::new(50);
+        let mut segments = vec![];
+        for _ in 0..5 {
+            let writer = pool
+                .get_write_buffer(10)
+                .await
+                .expect("Could not allocate buffer");
+            segments.push(writer);
+        }
+
+        // We should not be able to allocate another segment
+        assert!(pool.get_write_buffer(10).now_or_never().is_none())
     }
 }
