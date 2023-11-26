@@ -22,3 +22,5 @@ jobs:
       run: cargo clippy -- -Dwarnings
     - name: Run tests
       run: cargo test --verbose
+    - name: Run examples
+      run: cargo run --example in_memory
