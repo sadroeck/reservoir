@@ -1,12 +1,15 @@
 mod error;
+mod reservoir;
 mod tx_id_log;
-mod write_ahead_log;
 mod write_handle;
 
-mod reservoirs;
+mod storage_layer;
+mod tx_id;
 
-pub use error::*;
-pub use reservoirs::*;
-pub use tx_id_log::*;
-pub use write_ahead_log::*;
+pub use storage_layer::*;
+
+pub use error::{ReservoirError, ReservoirResult};
+pub use reservoir::Reservoir;
+pub use tx_id::TransactionId;
+pub use tx_id_log::{DamControl, DamFlusher};
 pub use write_handle::WriteHandle;

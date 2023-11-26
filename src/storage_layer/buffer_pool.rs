@@ -1,4 +1,4 @@
-use crate::{StorageLayer, StoreResult};
+use crate::{ReservoirResult, StorageLayer};
 use range_alloc::RangeAllocator;
 use std::io::Error;
 use std::ops::{Deref, DerefMut};
@@ -152,13 +152,13 @@ impl StorageLayer for BufferPool {
     type Writer = PoolSegment;
 
     /// This is a non-persistent solution, so we always return 0.
-    async fn get_highest_committed_tx_id(&self) -> StoreResult<u64> {
+    async fn get_highest_committed_tx_id(&self) -> ReservoirResult<u64> {
         Ok(0)
     }
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
-    async fn get_write_buffer(&self, size: usize) -> StoreResult<Self::Writer> {
+    async fn get_write_buffer(&self, size: usize) -> ReservoirResult<Self::Writer> {
         loop {
             match self.try_alloc_segment(size) {
                 Some(segment) => return Ok(segment),
