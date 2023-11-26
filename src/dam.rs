@@ -6,22 +6,31 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::trace;
 
-const MAX_ID_LOG_BUFFER_SIZE: usize = 4096;
+const MAX_PENDING_TRANSACTIONS: usize = 4096;
+
+pub struct SerializedTransaction {
+    pub id: TransactionId,
+    pub size: usize,
+    pub crc: u32,
+}
 
 /// A cheap to clone handle to commit serialized transaction IDs to the secondary log.
-/// A handle can submit a single TX ID to the log. If `SYNC` is set to `true`, the handle will
-/// wait for durable commit to storage of the TX ID before returning. If `SYNC` is set to `false`,
-/// the ID will be durably committed in the background.
+/// A handle can submit a single transaction ID to the log. If [`SYNC`] is set to `true`, the handle will
+/// wait for durable commit to storage of the transaction ID before returning.
+/// If [`SYNC`] is set to `false`, the ID will be durably committed in the background.
 #[derive(Clone)]
 pub struct DamControl<const SYNC: bool> {
-    tx: Sender<TransactionId>,
+    tx: Sender<SerializedTransaction>,
     event: Arc<Event>,
 }
 
 impl<const SYNC: bool> DamControl<SYNC> {
-    pub async fn commit(&self, id: TransactionId) {
+    pub async fn commit(&self, id: TransactionId, crc: u32, size: usize) {
         // Ignore any send error, as this can only happen when we've closed the channel.
-        let _ = self.tx.send_async(id).await;
+        let _ = self
+            .tx
+            .send_async(SerializedTransaction { id, crc, size })
+            .await;
 
         if SYNC {
             // Wait for the next sync point
@@ -39,10 +48,10 @@ pub type SyncDamFlusher = DamFlusher<true>;
 pub type AsyncDamFlusher = DamFlusher<false>;
 
 impl<const SYNC: bool> DamFlusher<SYNC> {
-    /// Spawns a background [`tokio`] task to flush committed transaction IDs to the secondary log.
-    /// Note: this requires a running tokio runtime.
+    /// Spawns a background [`tokio::task`] to flush committed transaction IDs to the secondary log.
+    /// Note: this requires a running [`tokio`] runtime.
     pub fn spawn_task(flush_interval: Duration) -> (JoinHandle<()>, DamControl<SYNC>) {
-        let (tx, rx) = flume::bounded(MAX_ID_LOG_BUFFER_SIZE);
+        let (tx, rx) = flume::bounded(MAX_PENDING_TRANSACTIONS);
         let task = tokio::spawn(Self::run(flush_interval, rx));
         (
             task,
@@ -56,7 +65,7 @@ impl<const SYNC: bool> DamFlusher<SYNC> {
     pub fn spawn_thread(
         flush_interval: Duration,
     ) -> (std::thread::JoinHandle<()>, DamControl<SYNC>) {
-        let (tx, rx) = flume::bounded(MAX_ID_LOG_BUFFER_SIZE);
+        let (tx, rx) = flume::bounded(MAX_PENDING_TRANSACTIONS);
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -74,30 +83,30 @@ impl<const SYNC: bool> DamFlusher<SYNC> {
     }
 
     /// Flushes the committed transaction IDs to the secondary log.
-    /// Note: in `SYNC` mode, this will flush all pending transaction IDs immediately.
-    /// In `ASYNC` mode, this will batch up all pending transaction IDs and flush them on the next
+    /// Note: in [`SYNC`] mode, this will flush all pending transaction IDs immediately.
+    /// In non-[`SYNC`] mode, this will batch up all pending transaction IDs and flush them on the next
     /// interval.
-    pub async fn run(flush_interval: Duration, rx: Receiver<TransactionId>) {
+    pub async fn run(flush_interval: Duration, rx: Receiver<SerializedTransaction>) {
         // TODO: Implement me
-        let mut buffered_ids = Vec::with_capacity(MAX_ID_LOG_BUFFER_SIZE);
+        let mut buffered_txs = Vec::with_capacity(MAX_PENDING_TRANSACTIONS);
 
-        let flush_ids = |ids: &mut Vec<TransactionId>| {
-            trace!(count = %ids.len(), "Flushing IDs");
-            ids.clear();
+        let flush_txs = |txs: &mut Vec<SerializedTransaction>| {
+            trace!(count = %txs.len(), "Flushing txs");
+            txs.clear();
         };
 
         if SYNC {
             loop {
                 match rx.recv_async().await {
-                    Ok(id) => {
-                        buffered_ids.push(id);
+                    Ok(txn) => {
+                        buffered_txs.push(txn);
 
                         // Drain the channel
-                        while let Ok(id) = rx.try_recv() {
-                            buffered_ids.push(id);
+                        while let Ok(txn) = rx.try_recv() {
+                            buffered_txs.push(txn);
                         }
 
-                        flush_ids(&mut buffered_ids);
+                        flush_txs(&mut buffered_txs);
                     }
                     Err(_) => return,
                 }
@@ -110,20 +119,20 @@ impl<const SYNC: bool> DamFlusher<SYNC> {
                 // Drain the rest of the channel
                 'ids: loop {
                     match rx.try_recv() {
-                        Ok(id) => buffered_ids.push(id),
+                        Ok(txn) => buffered_txs.push(txn),
                         Err(TryRecvError::Empty) => break 'ids,
                         Err(TryRecvError::Disconnected) => {
-                            flush_ids(&mut buffered_ids);
+                            flush_txs(&mut buffered_txs);
                             return;
                         }
                     }
                 }
 
-                while let Ok(id) = rx.try_recv() {
-                    buffered_ids.push(id);
+                while let Ok(txn) = rx.try_recv() {
+                    buffered_txs.push(txn);
                 }
 
-                flush_ids(&mut buffered_ids);
+                flush_txs(&mut buffered_txs);
             }
         }
     }

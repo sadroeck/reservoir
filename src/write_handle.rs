@@ -1,6 +1,6 @@
+use crate::dam::DamControl;
 use crate::error::ReservoirResult;
 use crate::tx_id::TransactionId;
-use crate::tx_id_log::DamControl;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub struct WriteHandle<W, const SYNC: bool>
@@ -17,6 +17,8 @@ where
     txn_id_log: DamControl<SYNC>,
     /// Running CRC checksum of the data written to the storage layer.
     crc: crc32fast::Hasher,
+    /// Number of bytes written to the storage layer.
+    payload_bytes: usize,
 }
 
 impl<W, const SYNC: bool> WriteHandle<W, SYNC>
@@ -34,6 +36,7 @@ where
             data_writer,
             txn_id_log,
             crc: crc32fast::Hasher::new(),
+            payload_bytes: 0,
         }
     }
 
@@ -44,6 +47,7 @@ where
         }
         self.data_writer.write_all(buf).await?;
         self.crc.update(buf);
+        self.payload_bytes += buf.len();
         Ok(())
     }
 
@@ -52,7 +56,9 @@ where
     pub async fn commit(mut self) -> ReservoirResult<()> {
         let checksum = self.crc.finalize();
         self.data_writer.write_u32(checksum).await?;
-        self.txn_id_log.commit(self.id).await;
+        self.txn_id_log
+            .commit(self.id, checksum, self.payload_bytes)
+            .await;
         Ok(())
     }
 }
