@@ -2,6 +2,7 @@ use crate::error::ReservoirResult;
 use crate::tx_id::TransactionId;
 use crate::write_handle::WriteHandle;
 use crate::{DamControl, StorageLayer};
+use std::mem::size_of;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -31,8 +32,10 @@ where
         &self,
         size: usize,
     ) -> ReservoirResult<WriteHandle<S::Writer, SYNC>> {
-        let data_writer = self.storage.get_write_buffer(size).await?;
-        let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::Relaxed));
+        // We need to store the payload + the transaction ID + the CRC checksum
+        let buffer_size = size + size_of::<TransactionId>() + size_of::<u32>();
+        let data_writer = self.storage.get_write_buffer(buffer_size).await?;
+        let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::AcqRel));
         Ok(WriteHandle::new(
             tx_id,
             data_writer,
