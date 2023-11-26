@@ -4,7 +4,6 @@ use crate::write_handle::WriteHandle;
 use crate::{DamControl, StorageLayer};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use tracing::debug;
 
 /// A reservoir is structure that allows for the creation of uniquely identified write
 /// transactions into dedicated buffers. These unordered transactions can then be committed to the
@@ -34,7 +33,6 @@ where
     ) -> ReservoirResult<WriteHandle<S::Writer, SYNC>> {
         let data_writer = self.storage.get_write_buffer(size).await?;
         let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::Relaxed));
-        debug!(%tx_id, %size, "Created transaction");
         Ok(WriteHandle::new(
             tx_id,
             data_writer,

@@ -1,9 +1,10 @@
 use crate::tx_id::TransactionId;
 use event_listener::Event;
-use flume::Sender;
+use flume::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tokio::task::JoinHandle;
+use tracing::trace;
 
 const MAX_ID_LOG_BUFFER_SIZE: usize = 4096;
 
@@ -34,29 +35,96 @@ impl<const SYNC: bool> DamControl<SYNC> {
 /// on a dedicated interval in the background.
 pub struct DamFlusher<const SYNC: bool>;
 
+pub type SyncDamFlusher = DamFlusher<true>;
+pub type AsyncDamFlusher = DamFlusher<false>;
+
 impl<const SYNC: bool> DamFlusher<SYNC> {
-    pub fn run(flush_interval: Duration) -> DamControl<SYNC> {
+    /// Spawns a background [`tokio`] task to flush committed transaction IDs to the secondary log.
+    /// Note: this requires a running tokio runtime.
+    pub fn spawn_task(flush_interval: Duration) -> (JoinHandle<()>, DamControl<SYNC>) {
         let (tx, rx) = flume::bounded(MAX_ID_LOG_BUFFER_SIZE);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async move {
+        let task = tokio::spawn(Self::run(flush_interval, rx));
+        (
+            task,
+            DamControl {
+                tx,
+                event: Arc::new(Default::default()),
+            },
+        )
+    }
+
+    pub fn spawn_thread(
+        flush_interval: Duration,
+    ) -> (std::thread::JoinHandle<()>, DamControl<SYNC>) {
+        let (tx, rx) = flume::bounded(MAX_ID_LOG_BUFFER_SIZE);
+        let thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(Self::run(flush_interval, rx));
+        });
+        (
+            thread,
+            DamControl {
+                tx,
+                event: Arc::new(Default::default()),
+            },
+        )
+    }
+
+    /// Flushes the committed transaction IDs to the secondary log.
+    /// Note: in `SYNC` mode, this will flush all pending transaction IDs immediately.
+    /// In `ASYNC` mode, this will batch up all pending transaction IDs and flush them on the next
+    /// interval.
+    pub async fn run(flush_interval: Duration, rx: Receiver<TransactionId>) {
+        // TODO: Implement me
+        let mut buffered_ids = Vec::with_capacity(MAX_ID_LOG_BUFFER_SIZE);
+
+        let flush_ids = |ids: &mut Vec<TransactionId>| {
+            trace!(count = %ids.len(), "Flushing IDs");
+            ids.clear();
+        };
+
+        if SYNC {
+            loop {
+                match rx.recv_async().await {
+                    Ok(id) => {
+                        buffered_ids.push(id);
+
+                        // Drain the channel
+                        while let Ok(id) = rx.try_recv() {
+                            buffered_ids.push(id);
+                        }
+
+                        flush_ids(&mut buffered_ids);
+                    }
+                    Err(_) => return,
+                }
+            }
+        } else {
             let mut interval = tokio::time::interval(flush_interval);
             loop {
                 interval.tick().await;
+
+                // Drain the rest of the channel
                 'ids: loop {
                     match rx.try_recv() {
-                        Ok(id) => info!("Flushing transaction ID: {id}"),
-                        Err(flume::TryRecvError::Empty) => continue 'ids,
-                        Err(flume::TryRecvError::Disconnected) => return,
+                        Ok(id) => buffered_ids.push(id),
+                        Err(TryRecvError::Empty) => break 'ids,
+                        Err(TryRecvError::Disconnected) => {
+                            flush_ids(&mut buffered_ids);
+                            return;
+                        }
                     }
                 }
+
+                while let Ok(id) = rx.try_recv() {
+                    buffered_ids.push(id);
+                }
+
+                flush_ids(&mut buffered_ids);
             }
-        });
-        DamControl {
-            tx,
-            event: Arc::new(Default::default()),
         }
     }
 }

@@ -11,5 +11,5 @@ pub use storage_layer::*;
 pub use error::{ReservoirError, ReservoirResult};
 pub use reservoir::Reservoir;
 pub use tx_id::TransactionId;
-pub use tx_id_log::{DamControl, DamFlusher};
+pub use tx_id_log::{AsyncDamFlusher, DamControl, DamFlusher, SyncDamFlusher};
 pub use write_handle::WriteHandle;
