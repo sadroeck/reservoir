@@ -5,6 +5,7 @@ mod write_handle;
 
 mod storage_layer;
 mod tx_id;
+mod utils;
 
 pub use storage_layer::*;
 

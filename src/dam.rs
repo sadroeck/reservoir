@@ -1,4 +1,5 @@
 use crate::tx_id::TransactionId;
+use crate::utils::{FixedBuffer, FixedBufferError};
 use event_listener::Event;
 use flume::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
@@ -8,10 +9,21 @@ use tracing::trace;
 
 const MAX_PENDING_TRANSACTIONS: usize = 4096;
 
+#[derive(Debug, Copy, Clone)]
 pub struct SerializedTransaction {
     pub id: TransactionId,
     pub size: usize,
     pub crc: u32,
+}
+
+impl Default for SerializedTransaction {
+    fn default() -> Self {
+        Self {
+            id: TransactionId(u64::MAX),
+            size: 0,
+            crc: 0,
+        }
+    }
 }
 
 /// A cheap to clone handle to commit serialized transaction IDs to the secondary log.
@@ -82,31 +94,57 @@ impl<const SYNC: bool> DamFlusher<SYNC> {
         )
     }
 
+    fn write_current_txs(
+        txs: &mut FixedBuffer<SerializedTransaction, MAX_PENDING_TRANSACTIONS>,
+        rx: &Receiver<SerializedTransaction>,
+    ) -> Result<(), TryRecvError> {
+        // Drain the channel
+        loop {
+            match rx.try_recv() {
+                Ok(txn) => match txs.push(txn) {
+                    Ok(()) => {}
+                    Err(FixedBufferError::BufferOverflow) => {
+                        // We've filled up the buffer, so we need to flush it
+                        Self::flush_transactions(txs);
+                    }
+                },
+                Err(TryRecvError::Empty) => {
+                    // There are no more transactions to drain, so flush & return.
+                    Self::flush_transactions(txs);
+                    return Ok(());
+                }
+                Err(TryRecvError::Disconnected) => return Err(TryRecvError::Disconnected),
+            }
+        }
+    }
+
+    fn flush_transactions(txs: &mut FixedBuffer<SerializedTransaction, MAX_PENDING_TRANSACTIONS>) {
+        trace!(count = %txs.len(), "Flushing txs");
+        txs.clear();
+    }
+
     /// Flushes the committed transaction IDs to the secondary log.
     /// Note: in [`SYNC`] mode, this will flush all pending transaction IDs immediately.
     /// In non-[`SYNC`] mode, this will batch up all pending transaction IDs and flush them on the next
     /// interval.
     pub async fn run(flush_interval: Duration, rx: Receiver<SerializedTransaction>) {
         // TODO: Implement me
-        let mut buffered_txs = Vec::with_capacity(MAX_PENDING_TRANSACTIONS);
-
-        let flush_txs = |txs: &mut Vec<SerializedTransaction>| {
-            trace!(count = %txs.len(), "Flushing txs");
-            txs.clear();
-        };
+        let mut buffered_txs =
+            FixedBuffer::<SerializedTransaction, MAX_PENDING_TRANSACTIONS>::new();
 
         if SYNC {
             loop {
                 match rx.recv_async().await {
                     Ok(txn) => {
-                        buffered_txs.push(txn);
-
-                        // Drain the channel
-                        while let Ok(txn) = rx.try_recv() {
-                            buffered_txs.push(txn);
+                        if let Err(FixedBufferError::BufferOverflow) = buffered_txs.push(txn) {
+                            Self::flush_transactions(&mut buffered_txs);
                         }
 
-                        flush_txs(&mut buffered_txs);
+                        if let Err(TryRecvError::Disconnected) =
+                            Self::write_current_txs(&mut buffered_txs, &rx)
+                        {
+                            return;
+                        }
                     }
                     Err(_) => return,
                 }
@@ -116,23 +154,11 @@ impl<const SYNC: bool> DamFlusher<SYNC> {
             loop {
                 interval.tick().await;
 
-                // Drain the rest of the channel
-                'ids: loop {
-                    match rx.try_recv() {
-                        Ok(txn) => buffered_txs.push(txn),
-                        Err(TryRecvError::Empty) => break 'ids,
-                        Err(TryRecvError::Disconnected) => {
-                            flush_txs(&mut buffered_txs);
-                            return;
-                        }
-                    }
+                if let Err(TryRecvError::Disconnected) =
+                    Self::write_current_txs(&mut buffered_txs, &rx)
+                {
+                    return;
                 }
-
-                while let Ok(txn) = rx.try_recv() {
-                    buffered_txs.push(txn);
-                }
-
-                flush_txs(&mut buffered_txs);
             }
         }
     }
