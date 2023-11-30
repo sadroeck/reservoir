@@ -1,12 +1,13 @@
 use crate::dam::DamControl;
 use crate::error::ReservoirResult;
 use crate::tx_id::TransactionId;
-use crate::utils::SyncNotifier;
+use crate::utils::FlushNotifier;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-pub struct WriteHandle<W, N: SyncNotifier>
+pub struct WriteHandle<W, F>
 where
     W: AsyncWrite + Unpin,
+    F: FlushNotifier,
 {
     /// Unique identifier of the transaction.
     id: TransactionId,
@@ -15,19 +16,19 @@ where
     /// Async write abstraction for the underlying storage layer
     data_writer: W,
     /// Access to the secondary log for transaction IDs.
-    txn_id_log: DamControl<N>,
+    txn_id_log: DamControl<F>,
     /// Running CRC checksum of the data written to the storage layer.
     crc: crc32fast::Hasher,
     /// Number of bytes written to the storage layer.
     payload_bytes: u32,
 }
 
-impl<W, N> WriteHandle<W, N>
+impl<W, F> WriteHandle<W, F>
 where
     W: AsyncWrite + Unpin,
-    N: SyncNotifier,
+    F: FlushNotifier,
 {
-    pub fn new(id: TransactionId, data_writer: W, txn_id_log: DamControl<N>) -> WriteHandle<W, N> {
+    pub fn new(id: TransactionId, data_writer: W, txn_id_log: DamControl<F>) -> WriteHandle<W, F> {
         WriteHandle {
             id,
             have_written_tx_id: false,

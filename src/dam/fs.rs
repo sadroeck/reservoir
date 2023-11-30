@@ -1,5 +1,5 @@
 use crate::dam::{FlushStrategy, SerializedTransaction, MAX_PENDING_TRANSACTIONS};
-use crate::utils::{FixedBufferWriter, SyncNotifier};
+use crate::utils::{FixedBufferWriter, FlushNotifier};
 use crate::{DamControl, ReservoirResult, TransactionId};
 use flume::{Receiver, TryRecvError};
 use std::fs::File;
@@ -15,14 +15,14 @@ const LOG_FILE_SIZE: usize = 1_000_000 * size_of::<SerializedTransaction>();
 const LOG_BUFFER_SIZE: usize = MAX_PENDING_TRANSACTIONS * size_of::<SerializedTransaction>();
 
 /// Utility to scan the contents of the Dam log
-pub struct DamIterator<'a, N: SyncNotifier> {
+pub struct DamIterator<'a, N: FlushNotifier> {
     buf: [u8; 128 * size_of::<SerializedTransaction>()],
     dam: &'a DamFlusher<N>,
     buf_idx: usize,
     file_offset: u64,
 }
 
-impl<'a, N: SyncNotifier> Iterator for DamIterator<'a, N> {
+impl<'a, N: FlushNotifier> Iterator for DamIterator<'a, N> {
     /// Pair of [`SerializedTransaction`] and the offset in the file where it was found.
     type Item = (SerializedTransaction, u64);
 
@@ -57,7 +57,7 @@ impl<'a, N: SyncNotifier> Iterator for DamIterator<'a, N> {
 
 /// Task to write the committed transaction IDs to the secondary log,
 /// on a dedicated interval in the background.
-pub struct DamFlusher<N: SyncNotifier> {
+pub struct DamFlusher<N: FlushNotifier> {
     /// The flush strategy to use.
     flush_strategy: FlushStrategy,
     /// The file handle to the secondary log.
@@ -66,7 +66,7 @@ pub struct DamFlusher<N: SyncNotifier> {
     notifier: N,
 }
 
-impl<N: SyncNotifier> DamFlusher<N> {
+impl<N: FlushNotifier> DamFlusher<N> {
     pub fn new(log_file: &Path, flush_strategy: FlushStrategy) -> ReservoirResult<Self> {
         let (log_file, current_offset) = if log_file.exists() {
             // If the file already exists, just verify the size and open it

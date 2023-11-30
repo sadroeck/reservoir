@@ -1,5 +1,5 @@
 use crate::tx_id::TransactionId;
-use crate::utils::{NopNotifier, SyncNotifier};
+use crate::utils::{FlushNotifier, NopNotifier};
 use event_listener::Event;
 use flume::Sender;
 use std::sync::Arc;
@@ -60,12 +60,12 @@ impl SerializedTransaction {
 /// wait for durable commit to storage of the transaction ID before returning.
 /// If [`SYNC`] is set to `false`, the ID will be durably committed in the background.
 #[derive(Clone)]
-pub struct DamControl<N: SyncNotifier> {
+pub struct DamControl<F: FlushNotifier> {
     tx: Sender<SerializedTransaction>,
-    notifier: N,
+    notifier: F,
 }
 
-impl<N: SyncNotifier> DamControl<N> {
+impl<F: FlushNotifier> DamControl<F> {
     pub async fn commit(&self, id: TransactionId, crc: u32, size: u32) {
         // Ignore any send error, as this can only happen when we've closed the channel.
         let _ = self
@@ -81,15 +81,15 @@ impl<N: SyncNotifier> DamControl<N> {
 pub type SyncDamFlusher = DamFlusher<Arc<Event>>;
 pub type AsyncDamFlusher = DamFlusher<NopNotifier>;
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 mod io_uring;
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 pub use io_uring::DamFlusher;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(feature = "io_uring"))]
 mod fs;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(feature = "io_uring"))]
 pub use fs::DamFlusher;
 
 pub use flush_strategy::FlushStrategy;

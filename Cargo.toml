@@ -3,6 +3,10 @@ name = "reservoir"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+io_uring = []
+
 [dependencies]
 async-trait = "0.1"
 crc32fast = "1.2"

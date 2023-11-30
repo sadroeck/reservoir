@@ -1,4 +1,4 @@
-use crate::utils::{FixedBuffer, FixedBufferError, SyncNotifier};
+use crate::utils::{FixedBuffer, FixedBufferError, FlushNotifier};
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::FileExt;
@@ -23,6 +23,7 @@ pub struct FixedBufferWriter<const N: usize> {
     buffer: FixedBuffer<u8, N>,
 }
 
+#[allow(dead_code)]
 impl<const N: usize> FixedBufferWriter<N> {
     pub fn new(file: File, offset: u64) -> std::io::Result<Self> {
         let file_size = file.metadata()?.len();
@@ -67,14 +68,14 @@ impl<const N: usize> FixedBufferWriter<N> {
     }
 
     /// Write the contents of the current buffer to file & fsync the contents.
-    pub fn flush_all(&mut self, sync_event: &impl SyncNotifier) -> std::io::Result<()> {
+    pub fn flush_all(&mut self, sync_event: &impl FlushNotifier) -> std::io::Result<()> {
         self.write_buffer_to_file()?;
         self.flush_file(sync_event)?;
         Ok(())
     }
 
     /// Durably flush the cached bytes to the storage device.
-    fn flush_file(&mut self, sync_event: &impl SyncNotifier) -> std::io::Result<()> {
+    fn flush_file(&mut self, sync_event: &impl FlushNotifier) -> std::io::Result<()> {
         if self.use_range_sync {
             todo!("file_sync_range")
         } else {

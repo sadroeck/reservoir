@@ -1,6 +1,6 @@
 use crate::error::ReservoirResult;
 use crate::tx_id::TransactionId;
-use crate::utils::SyncNotifier;
+use crate::utils::FlushNotifier;
 use crate::write_handle::WriteHandle;
 use crate::{DamControl, StorageLayer};
 use std::mem::size_of;
@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 /// A reservoir is structure that allows for the creation of uniquely identified write
 /// transactions into dedicated buffers. These unordered transactions can then be committed to the
 /// underlying append-only transaction ID log.
-pub struct Reservoir<S, N: SyncNotifier> {
+pub struct Reservoir<S, N: FlushNotifier> {
     storage: S,
     next_tx_id: AtomicU64,
     log_id_writer: DamControl<N>,
@@ -19,7 +19,7 @@ pub struct Reservoir<S, N: SyncNotifier> {
 impl<S, N> Reservoir<S, N>
 where
     S: StorageLayer,
-    N: SyncNotifier,
+    N: FlushNotifier,
 {
     pub async fn new(
         storage: S,

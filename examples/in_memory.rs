@@ -1,6 +1,6 @@
 use reservoir::{
-    AsyncDamFlusher, BufferPool, FlushStrategy, Reservoir, ReservoirResult, SerializedTransaction,
-    SyncNotifier,
+    AsyncDamFlusher, BufferPool, FlushNotifier, FlushStrategy, Reservoir, ReservoirResult,
+    SerializedTransaction,
 };
 use std::mem::size_of;
 use std::path::Path;
@@ -16,7 +16,7 @@ const TASK_ITERATIONS: usize = 1000;
 const NUM_WRITES: usize = TASK_COUNT * TASK_ITERATIONS;
 
 async fn write_payload(
-    reservoir: &Reservoir<BufferPool, impl SyncNotifier>,
+    reservoir: &Reservoir<BufferPool, impl FlushNotifier>,
 ) -> ReservoirResult<()> {
     let mut tx = reservoir.new_transaction_fixed(PAYLOAD.len()).await?;
     tx.write_bytes(&PAYLOAD).await?;

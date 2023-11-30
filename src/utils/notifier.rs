@@ -3,23 +3,23 @@ use std::future::{ready, Future};
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub trait SyncNotifier: Clone + Send + 'static {
-    type NotificationWaiter: Future<Output = ()>;
+pub trait FlushNotifier: Clone + Send + 'static {
+    type Waiter: Future<Output = ()>;
 
     fn new() -> Self;
 
-    /// Notify [`count`] waiters that a sync has occurred.
+    /// Notify [`count`] waiters that a storage flush has occurred.
     fn notify_transactions(&self, count: usize);
 
     /// Retrieves a handle to wait for the sync event.
-    fn get_waiter(&self) -> Self::NotificationWaiter;
+    fn get_waiter(&self) -> Self::Waiter;
 }
 
 #[derive(Clone, Default)]
 pub struct NopNotifier;
 
-impl SyncNotifier for NopNotifier {
-    type NotificationWaiter = std::future::Ready<()>;
+impl FlushNotifier for NopNotifier {
+    type Waiter = std::future::Ready<()>;
 
     fn new() -> Self {
         Self
@@ -29,13 +29,13 @@ impl SyncNotifier for NopNotifier {
         // Do nothing
     }
 
-    fn get_waiter(&self) -> Self::NotificationWaiter {
+    fn get_waiter(&self) -> Self::Waiter {
         ready(())
     }
 }
 
-impl SyncNotifier for Arc<Event> {
-    type NotificationWaiter = Pin<Box<EventListener<()>>>;
+impl FlushNotifier for Arc<Event> {
+    type Waiter = Pin<Box<EventListener<()>>>;
 
     fn new() -> Self {
         Arc::new(Event::new())
@@ -45,7 +45,7 @@ impl SyncNotifier for Arc<Event> {
         self.notify(count.relaxed());
     }
 
-    fn get_waiter(&self) -> Self::NotificationWaiter {
+    fn get_waiter(&self) -> Self::Waiter {
         self.as_ref().listen()
     }
 }
