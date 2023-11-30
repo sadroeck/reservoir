@@ -51,6 +51,7 @@ impl<'a, N: FlushNotifier> Iterator for DamIterator<'a, N> {
 
         let res = Some((txn, self.file_offset));
         self.file_offset += size_of::<SerializedTransaction>() as u64;
+        self.buf_idx += 1;
         res
     }
 }
