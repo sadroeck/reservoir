@@ -1,7 +1,12 @@
-use reservoir::{AsyncDamFlusher, BufferPool, Reservoir, ReservoirResult};
+use reservoir::{
+    AsyncDamFlusher, BufferPool, FlushStrategy, Reservoir, ReservoirResult, SerializedTransaction,
+    SyncNotifier,
+};
+use std::mem::size_of;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::info;
 
 const ONE_MEBIBYTE: usize = 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_millis(5);
@@ -10,7 +15,9 @@ const TASK_COUNT: usize = 100;
 const TASK_ITERATIONS: usize = 1000;
 const NUM_WRITES: usize = TASK_COUNT * TASK_ITERATIONS;
 
-async fn write_payload(reservoir: Arc<Reservoir<BufferPool, false>>) -> ReservoirResult<()> {
+async fn write_payload(
+    reservoir: &Reservoir<BufferPool, impl SyncNotifier>,
+) -> ReservoirResult<()> {
     let mut tx = reservoir.new_transaction_fixed(PAYLOAD.len()).await?;
     tx.write_bytes(&PAYLOAD).await?;
     tx.commit().await?;
@@ -26,8 +33,13 @@ async fn main() -> ReservoirResult<()> {
 
     // Create a reservoir with a 1MiB buffer pool and a 5ms sync interval
     let storage = BufferPool::new(ONE_MEBIBYTE);
-    let (dam_task, dam_handle) = AsyncDamFlusher::spawn_task(SYNC_INTERVAL);
-    let reservoir = Arc::new(Reservoir::new(storage, dam_handle).await?);
+    let dam = AsyncDamFlusher::new(
+        Path::new("./dam.log"),
+        FlushStrategy::Interval(SYNC_INTERVAL),
+    )?;
+    let start_tx_id = dam.highest_committed_transaction_id();
+    let (dam_task, dam_handle) = dam.spawn_thread();
+    let reservoir = Arc::new(Reservoir::new(storage, start_tx_id, dam_handle).await?);
 
     let start = std::time::Instant::now();
 
@@ -36,26 +48,30 @@ async fn main() -> ReservoirResult<()> {
         let reservoir_clone = reservoir.clone();
         tokio::spawn(async move {
             for _ in 0..TASK_ITERATIONS {
-                let _ = write_payload(reservoir_clone.clone()).await;
+                let _ = write_payload(&reservoir_clone).await;
             }
         });
     }
 
     let write_end = std::time::Instant::now();
 
-    std::mem::drop(reservoir);
+    drop(reservoir);
 
-    if let Err(err) = dam_task.await {
-        error!(%err, "Error in dam task");
-    }
+    dam_task.join().expect("Could not join dam task");
 
     let sync_end = std::time::Instant::now();
+
+    const WRITE_SIZE: usize = PAYLOAD.len() + size_of::<SerializedTransaction>();
 
     info!("Write time: {:?}", write_end - start);
     info!("Sync time: {:?}", sync_end - start);
     info!(
+        "Wrote {}MiB",
+        (NUM_WRITES as f64 * WRITE_SIZE as f64) / ONE_MEBIBYTE as f64
+    );
+    info!(
         "Write throughput: {} MiB/s",
-        (NUM_WRITES as f64 * PAYLOAD.len() as f64 / (write_end - start).as_secs_f64())
+        (NUM_WRITES as f64 * WRITE_SIZE as f64 / (write_end - start).as_secs_f64())
             / ONE_MEBIBYTE as f64
     );
     info!(

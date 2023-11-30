@@ -1,5 +1,6 @@
 use crate::error::ReservoirResult;
 use crate::tx_id::TransactionId;
+use crate::utils::SyncNotifier;
 use crate::write_handle::WriteHandle;
 use crate::{DamControl, StorageLayer};
 use std::mem::size_of;
@@ -9,21 +10,25 @@ use std::sync::atomic::Ordering;
 /// A reservoir is structure that allows for the creation of uniquely identified write
 /// transactions into dedicated buffers. These unordered transactions can then be committed to the
 /// underlying append-only transaction ID log.
-pub struct Reservoir<S, const SYNC: bool> {
+pub struct Reservoir<S, N: SyncNotifier> {
     storage: S,
     next_tx_id: AtomicU64,
-    log_id_writer: DamControl<SYNC>,
+    log_id_writer: DamControl<N>,
 }
 
-impl<S, const SYNC: bool> Reservoir<S, SYNC>
+impl<S, N> Reservoir<S, N>
 where
     S: StorageLayer,
+    N: SyncNotifier,
 {
-    pub async fn new(storage: S, log_id_writer: DamControl<SYNC>) -> ReservoirResult<Self> {
-        let highest_committed_tx_id = storage.get_highest_committed_tx_id().await?;
+    pub async fn new(
+        storage: S,
+        starting_tx_id: TransactionId,
+        log_id_writer: DamControl<N>,
+    ) -> ReservoirResult<Self> {
         Ok(Self {
             storage,
-            next_tx_id: AtomicU64::new(highest_committed_tx_id),
+            next_tx_id: AtomicU64::new(starting_tx_id.0),
             log_id_writer,
         })
     }
@@ -31,7 +36,7 @@ where
     pub async fn new_transaction_fixed(
         &self,
         size: usize,
-    ) -> ReservoirResult<WriteHandle<S::Writer, SYNC>> {
+    ) -> ReservoirResult<WriteHandle<S::Writer, N>> {
         // We need to store the payload + the transaction ID + the CRC checksum
         let buffer_size = size + size_of::<TransactionId>() + size_of::<u32>();
         let data_writer = self.storage.get_write_buffer(buffer_size).await?;
@@ -45,7 +50,7 @@ where
 
     /// Creates a new write transactions with a variable size.
     /// Note: If your transaction has a predetermined size, prefer to use [`new_transaction_fixed`].
-    pub async fn new_transaction(&self) -> ReservoirResult<WriteHandle<S::Writer, SYNC>> {
+    pub async fn new_transaction(&self) -> ReservoirResult<WriteHandle<S::Writer, N>> {
         todo!("new_transaction")
     }
 }

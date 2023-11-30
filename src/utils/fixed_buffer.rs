@@ -1,11 +1,23 @@
+use std::io::{ErrorKind, Write};
+
 #[derive(Debug, thiserror::Error)]
 pub enum FixedBufferError {
     #[error("buffer overflow")]
     BufferOverflow,
 }
 
+impl From<FixedBufferError> for std::io::Error {
+    fn from(value: FixedBufferError) -> Self {
+        match value {
+            FixedBufferError::BufferOverflow => {
+                std::io::Error::new(ErrorKind::UnexpectedEof, value)
+            }
+        }
+    }
+}
+
 pub struct FixedBuffer<T: Default, const N: usize> {
-    buffer: [T; N],
+    buffer: Box<[T; N]>,
     size: usize,
 }
 
@@ -15,12 +27,34 @@ impl<T: Default + Copy, const N: usize> Default for FixedBuffer<T, N> {
     }
 }
 
+impl<const N: usize> Write for FixedBuffer<u8, N> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.write(buf).map(|()| buf.len()).map_err(Into::into)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<const N: usize> FixedBuffer<u8, N> {
+    pub fn write(&mut self, buf: &[u8]) -> Result<(), FixedBufferError> {
+        if self.size > (N - buf.len()) {
+            Err(FixedBufferError::BufferOverflow)
+        } else {
+            self.buffer[self.size..self.size + buf.len()].copy_from_slice(buf);
+            self.size += buf.len();
+            Ok(())
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl<T: Default + Copy, const N: usize> FixedBuffer<T, N> {
     #[inline]
     pub fn new() -> Self {
         Self {
-            buffer: [T::default(); N],
+            buffer: Box::new([T::default(); N]),
             size: 0,
         }
     }

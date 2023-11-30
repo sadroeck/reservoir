@@ -1,9 +1,10 @@
 use crate::dam::DamControl;
 use crate::error::ReservoirResult;
 use crate::tx_id::TransactionId;
+use crate::utils::SyncNotifier;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-pub struct WriteHandle<W, const SYNC: bool>
+pub struct WriteHandle<W, N: SyncNotifier>
 where
     W: AsyncWrite + Unpin,
 {
@@ -14,22 +15,19 @@ where
     /// Async write abstraction for the underlying storage layer
     data_writer: W,
     /// Access to the secondary log for transaction IDs.
-    txn_id_log: DamControl<SYNC>,
+    txn_id_log: DamControl<N>,
     /// Running CRC checksum of the data written to the storage layer.
     crc: crc32fast::Hasher,
     /// Number of bytes written to the storage layer.
-    payload_bytes: usize,
+    payload_bytes: u32,
 }
 
-impl<W, const SYNC: bool> WriteHandle<W, SYNC>
+impl<W, N> WriteHandle<W, N>
 where
     W: AsyncWrite + Unpin,
+    N: SyncNotifier,
 {
-    pub fn new(
-        id: TransactionId,
-        data_writer: W,
-        txn_id_log: DamControl<SYNC>,
-    ) -> WriteHandle<W, SYNC> {
+    pub fn new(id: TransactionId, data_writer: W, txn_id_log: DamControl<N>) -> WriteHandle<W, N> {
         WriteHandle {
             id,
             have_written_tx_id: false,
@@ -41,13 +39,14 @@ where
     }
 
     pub async fn write_bytes(&mut self, buf: &[u8]) -> ReservoirResult<()> {
+        // TODO: Check max transaction size
         if !self.have_written_tx_id {
             self.data_writer.write_u64(self.id.into()).await?;
             self.have_written_tx_id = true;
         }
         self.data_writer.write_all(buf).await?;
         self.crc.update(buf);
-        self.payload_bytes += buf.len();
+        self.payload_bytes += buf.len() as u32;
         Ok(())
     }
 
