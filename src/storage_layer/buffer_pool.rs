@@ -42,8 +42,8 @@ impl BufferPool {
         let mut alloc = self.alloc.lock().unwrap();
         let range = alloc.allocate_range(size).ok()?;
         Some(PoolSegment {
-            /// Safety: The [`Drop`] implementation of [`PoolSegment`] ensures that the pool is not
-            /// dropped before the segment.
+            // Safety: The [`Drop`] implementation of [`PoolSegment`] ensures that the pool is not
+            // dropped before the segment.
             pool: unsafe { &*(self as *const BufferPool) },
             buffer_start: unsafe { self.buffer.as_ptr().add(range.start) as *mut u8 },
             size,
