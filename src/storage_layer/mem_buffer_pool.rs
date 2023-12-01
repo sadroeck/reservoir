@@ -9,12 +9,12 @@ use tokio::io::AsyncWrite;
 
 /// A in-memory buffer pool implementation providing segments of arbitrary sizes,
 /// tracked by a list of offset+size tuples.
-pub struct BufferPool {
+pub struct MemBufferPool {
     buffer: Vec<u8>,
     alloc: Mutex<RangeAllocator<usize>>,
 }
 
-impl Drop for BufferPool {
+impl Drop for MemBufferPool {
     fn drop(&mut self) {
         let full_size = self.buffer.len();
         loop {
@@ -26,8 +26,8 @@ impl Drop for BufferPool {
     }
 }
 
-impl BufferPool {
-    /// Creates a new [`BufferPool`] with the specified size.
+impl MemBufferPool {
+    /// Creates a new [`MemBufferPool`] with the specified size.
     pub fn new(size: usize) -> Self {
         Self {
             buffer: vec![0; size],
@@ -44,7 +44,7 @@ impl BufferPool {
         Some(PoolSegment {
             // Safety: The [`Drop`] implementation of [`PoolSegment`] ensures that the pool is not
             // dropped before the segment.
-            pool: unsafe { &*(self as *const BufferPool) },
+            pool: unsafe { &*(self as *const MemBufferPool) },
             buffer_start: unsafe { self.buffer.as_ptr().add(range.start) as *mut u8 },
             size,
             bytes_written: 0,
@@ -56,7 +56,7 @@ pub struct PoolSegment {
     /// Reference to the parent pool.
     /// Note: The BufferPool is guaranteed not to be dropped before the entire pool has been
     /// reclaimed.
-    pool: &'static BufferPool,
+    pool: &'static MemBufferPool,
     /// Pointer to the start of the segment.
     buffer_start: *mut u8,
     /// Size of the segment.
@@ -148,7 +148,7 @@ impl AsyncWrite for PoolSegment {
 }
 
 #[async_trait::async_trait]
-impl StorageLayer for BufferPool {
+impl StorageLayer for MemBufferPool {
     type Writer = PoolSegment;
 
     /// Retrieves a write buffer of the specified size.
@@ -174,7 +174,7 @@ mod test {
 
     #[tokio::test]
     async fn test_single_buffer() {
-        let pool = BufferPool::new(11);
+        let pool = MemBufferPool::new(11);
         let payload = b"Hello world";
         {
             let mut writer = pool
@@ -192,7 +192,7 @@ mod test {
     #[tokio::test]
     async fn test_multiple_buffers_unsaturated() {
         let payload = [42u8, 42u8, 42u8, 42u8];
-        let pool = BufferPool::new(10 * payload.len());
+        let pool = MemBufferPool::new(10 * payload.len());
         {
             let mut segments = vec![];
             for _ in 0..10 {
@@ -212,7 +212,7 @@ mod test {
 
     #[tokio::test]
     async fn test_multiple_buffers_saturated() {
-        let pool = BufferPool::new(50);
+        let pool = MemBufferPool::new(50);
         let mut segments = vec![];
         for _ in 0..5 {
             let writer = pool

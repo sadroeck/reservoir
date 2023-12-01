@@ -1,7 +1,7 @@
-mod buffer_pool;
+mod mem_buffer_pool;
 
 use crate::ReservoirResult;
-pub use buffer_pool::*;
+pub use mem_buffer_pool::*;
 use tokio::io::AsyncWrite;
 
 #[async_trait::async_trait]

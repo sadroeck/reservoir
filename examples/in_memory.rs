@@ -1,5 +1,5 @@
 use reservoir::{
-    AsyncDamFlusher, BufferPool, FlushNotifier, FlushStrategy, Reservoir, ReservoirResult,
+    AsyncDamFlusher, FlushNotifier, FlushStrategy, MemBufferPool, Reservoir, ReservoirResult,
     SerializedTransaction,
 };
 use std::mem::size_of;
@@ -16,7 +16,7 @@ const TASK_ITERATIONS: usize = 1000;
 const NUM_WRITES: usize = TASK_COUNT * TASK_ITERATIONS;
 
 async fn write_payload(
-    reservoir: &Reservoir<BufferPool, impl FlushNotifier>,
+    reservoir: &Reservoir<MemBufferPool, impl FlushNotifier>,
 ) -> ReservoirResult<()> {
     let mut tx = reservoir.new_transaction_fixed(PAYLOAD.len()).await?;
     tx.write_bytes(&PAYLOAD).await?;
@@ -32,7 +32,7 @@ async fn main() -> ReservoirResult<()> {
         .init();
 
     // Create a reservoir with a 1MiB buffer pool and a 5ms sync interval
-    let storage = BufferPool::new(ONE_MEBIBYTE);
+    let storage = MemBufferPool::new(ONE_MEBIBYTE);
     let dam = AsyncDamFlusher::new(
         Path::new("./dam.log"),
         FlushStrategy::Interval(SYNC_INTERVAL),
