@@ -3,8 +3,8 @@ use std::future::{ready, Future};
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub trait FlushNotifier: Clone + Send + 'static {
-    type Waiter: Future<Output = ()>;
+pub trait FlushNotifier: Clone + Send + Sync + 'static {
+    type Waiter: Future<Output = ()> + Send;
 
     fn new() -> Self;
 

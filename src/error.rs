@@ -7,4 +7,4 @@ pub enum ReservoirError {
 }
 
 /// A specialized `Result` type for this crate's storage operations.
-pub type ReservoirResult<T> = std::result::Result<T, ReservoirError>;
+pub type ReservoirResult<T> = Result<T, ReservoirError>;

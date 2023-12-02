@@ -12,6 +12,7 @@ async-trait = "0.1"
 crc32fast = "1.2"
 event-listener = "4.0"
 flume = "0.11"
+fs2 = "0.4"
 futures-util = "0.3"
 range-alloc = "0.1"
 tokio = { version = "1.34", features = ["rt", "io-util", "time"] }
