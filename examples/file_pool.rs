@@ -1,14 +1,12 @@
-use crate::spawn_work::Workload;
 use reservoir::{
     AsyncDamFlusher, FilePool, FlushStrategy, Reservoir, ReservoirResult, SerializedTransaction,
+    Workload,
 };
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
-
-mod spawn_work;
 
 const ONE_MEBIBYTE: u64 = 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_millis(5);

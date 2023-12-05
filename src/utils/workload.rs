@@ -1,4 +1,4 @@
-use reservoir::{FlushNotifier, Reservoir, ReservoirResult, StorageLayer};
+use crate::{FlushNotifier, Reservoir, ReservoirResult, StorageLayer};
 use std::sync::Arc;
 
 pub struct Workload {

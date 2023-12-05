@@ -15,5 +15,5 @@ pub use dam::{
 pub use error::{ReservoirError, ReservoirResult};
 pub use reservoir::Reservoir;
 pub use tx_id::TransactionId;
-pub use utils::{FlushNotifier, NopNotifier};
+pub use utils::*;
 pub use write_handle::WriteHandle;
