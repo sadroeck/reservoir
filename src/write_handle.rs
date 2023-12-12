@@ -11,8 +11,6 @@ where
 {
     /// Unique identifier of the transaction.
     id: TransactionId,
-    /// Flag to indicate if we've written the tx ID to the storage layer.
-    have_written_tx_id: bool,
     /// Async write abstraction for the underlying storage layer
     data_writer: W,
     /// Access to the secondary log for transaction IDs.
@@ -31,7 +29,6 @@ where
     pub fn new(id: TransactionId, data_writer: W, txn_id_log: DamControl<F>) -> WriteHandle<W, F> {
         WriteHandle {
             id,
-            have_written_tx_id: false,
             data_writer,
             txn_id_log,
             crc: crc32fast::Hasher::new(),
@@ -41,10 +38,8 @@ where
 
     pub async fn write_bytes(&mut self, buf: &[u8]) -> ReservoirResult<()> {
         // TODO: Check max transaction size
-        if !self.have_written_tx_id {
-            self.data_writer.write_u64(self.id.into()).await?;
-            self.have_written_tx_id = true;
-        }
+        self.data_writer.write_u64(self.id.into()).await?;
+        self.data_writer.write_u32(buf.len() as u32).await?;
         self.data_writer.write_all(buf).await?;
         self.crc.update(buf);
         self.payload_bytes += buf.len() as u32;

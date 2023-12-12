@@ -9,9 +9,7 @@ mod utils;
 
 pub use storage_layer::*;
 
-pub use dam::{
-    AsyncDamFlusher, DamControl, DamFlusher, FlushStrategy, SerializedTransaction, SyncDamFlusher,
-};
+pub use dam::*;
 pub use error::{ReservoirError, ReservoirResult};
 pub use reservoir::Reservoir;
 pub use tx_id::TransactionId;

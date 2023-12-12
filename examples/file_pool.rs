@@ -1,7 +1,4 @@
-use reservoir::{
-    AsyncDamFlusher, FilePool, FlushStrategy, Reservoir, ReservoirResult, SerializedTransaction,
-    Workload,
-};
+use reservoir::*;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,10 +23,8 @@ async fn main() -> ReservoirResult<()> {
 
     // Create a reservoir with a 8*32 MiB file pool and a 5ms sync interval
     let storage = FilePool::open(Path::new(FILE_POOL_PATH), 8, 32 * ONE_MEBIBYTE)?;
-    let dam = AsyncDamFlusher::new(
-        Path::new("./dam.log"),
-        FlushStrategy::Interval(SYNC_INTERVAL),
-    )?;
+    let dam_log = DamLog::new(Path::new("./dam.log"))?;
+    let dam = AsyncDamFlusher::new(dam_log, FlushStrategy::Interval(SYNC_INTERVAL))?;
     let start_tx_id = dam.highest_committed_transaction_id();
     let (dam_task, dam_handle) = dam.spawn_thread();
     let reservoir = Arc::new(Reservoir::new(storage, start_tx_id, dam_handle).await?);

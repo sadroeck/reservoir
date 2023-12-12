@@ -1,7 +1,9 @@
+use crate::dam::DamLog;
 use crate::utils::{FixedBuffer, FixedBufferError, FlushNotifier};
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::FileExt;
+use std::sync::atomic::Ordering;
 
 /// An equivalent to [`BufWriter`] but overwriting an existing file at a predefined offset
 /// instead of appending to a file.
@@ -9,11 +11,9 @@ use std::os::unix::fs::FileExt;
 pub struct FixedBufferWriter<const N: usize> {
     /// The underlying file being written to.
     /// Note: This should be pre-allocated on the underlying filesystem.
-    file: File,
+    log: DamLog,
     /// The maximum number of bytes the file is supposed to contain.
     file_size: u64,
-    /// The offset of the next write within the file
-    write_offset: u64,
     /// The number of unflushed writes
     buf_count_to_flush: u64,
     /// Enables the use [`sync_file_range`] or equivalent. If disabled a regular [`fdatasync`] is
@@ -25,13 +25,12 @@ pub struct FixedBufferWriter<const N: usize> {
 
 #[allow(dead_code)]
 impl<const N: usize> FixedBufferWriter<N> {
-    pub fn new(file: File, offset: u64) -> std::io::Result<Self> {
-        let file_size = file.metadata()?.len();
-        let use_range_sync = Self::determine_range_sync_capability(&file)?;
+    pub fn new(log: DamLog) -> std::io::Result<Self> {
+        let file_size = log.file.metadata()?.len();
+        let use_range_sync = Self::determine_range_sync_capability(&log.file)?;
         Ok(Self {
-            file,
+            log,
             file_size,
-            write_offset: offset,
             buf_count_to_flush: 0,
             use_range_sync,
             buffer: Default::default(),
@@ -49,7 +48,7 @@ impl<const N: usize> FixedBufferWriter<N> {
     }
 
     pub fn write_transaction_id_bytes(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        if self.write_offset + buf.len() as u64 > self.file_size {
+        if self.log.current_offset.load(Ordering::Relaxed) + buf.len() as u64 > self.file_size {
             return Err(std::io::Error::from(ErrorKind::UnexpectedEof));
         }
         match self.buffer.write(buf) {
@@ -79,8 +78,8 @@ impl<const N: usize> FixedBufferWriter<N> {
         if self.use_range_sync {
             todo!("file_sync_range")
         } else {
-            self.file.flush()?;
-            self.file.sync_data()?;
+            self.log.file.flush()?;
+            self.log.file.sync_data()?;
         }
 
         // Inform any transactions waiting for flush confirmation
@@ -93,16 +92,20 @@ impl<const N: usize> FixedBufferWriter<N> {
     pub fn write_buffer_to_file(&mut self) -> std::io::Result<()> {
         let buffer_size = self.buffer.len() as u64;
         // Write to the underlying file
-        self.file
-            .write_all_at(self.buffer.as_slice(), self.write_offset)?;
-        self.write_offset += buffer_size;
+        self.log.file.write_all_at(
+            self.buffer.as_slice(),
+            self.log.current_offset.load(Ordering::Relaxed),
+        )?;
+        self.log
+            .current_offset
+            .fetch_add(buffer_size, Ordering::Relaxed);
 
         // The current buffer has been written to the filesystem cache
         self.buffer.clear();
         Ok(())
     }
 
-    pub fn inner(&self) -> &File {
-        &self.file
+    pub fn inner(&self) -> &DamLog {
+        &self.log
     }
 }

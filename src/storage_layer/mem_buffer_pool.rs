@@ -1,17 +1,21 @@
-use crate::{ReservoirResult, StorageLayer};
+use crate::{ReservoirError, ReservoirResult, StorageLayer, TransactionId};
 use range_alloc::RangeAllocator;
 use std::io::Error;
+use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// A in-memory buffer pool implementation providing segments of arbitrary sizes,
 /// tracked by a list of offset+size tuples.
 pub struct MemBufferPool {
     buffer: Vec<u8>,
-    alloc: Mutex<RangeAllocator<usize>>,
+    active_readers: AtomicUsize,
+    alloc: Mutex<PoolAlloc>,
 }
 
 impl Drop for MemBufferPool {
@@ -19,7 +23,7 @@ impl Drop for MemBufferPool {
         let full_size = self.buffer.len();
         loop {
             let alloc = self.alloc.lock().unwrap();
-            if alloc.total_available() == full_size {
+            if alloc.alloc.total_available() == full_size {
                 return;
             }
         }
@@ -31,7 +35,8 @@ impl MemBufferPool {
     pub fn new(size: usize) -> Self {
         Self {
             buffer: vec![0; size],
-            alloc: Mutex::new(RangeAllocator::new(0..size)),
+            active_readers: AtomicUsize::new(0),
+            alloc: Mutex::new(PoolAlloc::new(size)),
         }
     }
 
@@ -40,7 +45,7 @@ impl MemBufferPool {
     /// The returned segment is valid until the pool is dropped.
     pub fn try_alloc_segment(&self, size: usize) -> Option<PoolSegment> {
         let mut alloc = self.alloc.lock().unwrap();
-        let range = alloc.allocate_range(size).ok()?;
+        let range = alloc.alloc.allocate_range(size).ok()?;
         Some(PoolSegment {
             // Safety: The [`Drop`] implementation of [`PoolSegment`] ensures that the pool is not
             // dropped before the segment.
@@ -49,6 +54,28 @@ impl MemBufferPool {
             size,
             bytes_written: 0,
         })
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PoolSegmentLoc {
+    /// The segment ID of the serialized segment
+    segment_id: TransactionId,
+    /// The binary offset within the buffer
+    offset: u64,
+}
+
+struct PoolAlloc {
+    alloc: RangeAllocator<usize>,
+    segments: Vec<PoolSegmentLoc>,
+}
+
+impl PoolAlloc {
+    pub fn new(size: usize) -> Self {
+        Self {
+            alloc: RangeAllocator::new(0..size),
+            segments: Vec::with_capacity(size / 512),
+        }
     }
 }
 
@@ -101,7 +128,9 @@ impl Drop for PoolSegment {
     fn drop(&mut self) {
         let start_offset = self.buffer_start as usize - self.pool.buffer.as_ptr() as usize;
         let mut alloc = self.pool.alloc.lock().unwrap();
-        alloc.free_range(start_offset..start_offset + self.size);
+        alloc
+            .alloc
+            .free_range(start_offset..start_offset + self.size);
     }
 }
 
@@ -147,9 +176,41 @@ impl AsyncWrite for PoolSegment {
     }
 }
 
+pub struct PoolSegmentReader {
+    pool: &'static MemBufferPool,
+    buffer: &'static [u8],
+    bytes_read: usize,
+}
+
+impl Drop for PoolSegmentReader {
+    fn drop(&mut self) {
+        self.pool.active_readers.fetch_sub(1, SeqCst);
+    }
+}
+
+impl AsyncRead for PoolSegmentReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let buf_size = buf.remaining();
+        if (self.bytes_read + buf_size) > self.buffer.len() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Buffer overflow",
+            )));
+        }
+        buf.put_slice(&self.buffer[self.bytes_read..self.bytes_read + buf_size]);
+        self.bytes_read += buf_size;
+        Poll::Ready(Ok(()))
+    }
+}
+
 #[async_trait::async_trait]
 impl StorageLayer for MemBufferPool {
     type Writer = PoolSegment;
+    type Reader = PoolSegmentReader;
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
@@ -162,6 +223,35 @@ impl StorageLayer for MemBufferPool {
                 }
             }
         }
+    }
+
+    async fn get_segment(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader> {
+        let alloc_access = self.alloc.lock().unwrap();
+        if let Some(segment) = alloc_access
+            .segments
+            .iter()
+            .find(|loc| loc.segment_id == segment_id)
+            .copied()
+        {
+            drop(alloc_access);
+
+            let size_offset = segment.offset as usize + size_of::<TransactionId>();
+            let size = u32::from_be_bytes(
+                self.buffer[size_offset..size_offset + size_of::<u32>()]
+                    .try_into()
+                    .unwrap(),
+            );
+            let data_offset = size_offset + size_of::<u32>();
+
+            return Ok(PoolSegmentReader {
+                pool: unsafe { &*(self as *const MemBufferPool) },
+                buffer: unsafe {
+                    std::slice::from_raw_parts(self.buffer.as_ptr().add(data_offset), size as usize)
+                },
+                bytes_read: 0,
+            });
+        }
+        Err(ReservoirError::NoSuchSegment(segment_id))
     }
 }
 

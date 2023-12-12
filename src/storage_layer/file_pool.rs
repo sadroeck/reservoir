@@ -1,15 +1,17 @@
-use crate::{ReservoirResult, StorageLayer};
+use crate::{ReservoirError, ReservoirResult, StorageLayer, TransactionId};
 use range_alloc::RangeAllocator;
 use std::fs::File;
 use std::io::ErrorKind;
+use std::mem::size_of;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::time::sleep;
 use tracing::info;
 
@@ -24,15 +26,47 @@ pub struct FilePool {
 
 impl Drop for FilePool {
     fn drop(&mut self) {
-        for FileBufferAlloc { file, alloc } in &self.files {
+        for FileBufferAlloc {
+            file,
+            alloc,
+            active_readers,
+        } in &self.files
+        {
             'drain_file: loop {
                 if let Ok(alloc_access) = alloc.try_lock() {
-                    if alloc_access.total_available() == file.metadata().unwrap().len() as usize {
+                    if alloc_access.alloc.total_available()
+                        == file.metadata().unwrap().len() as usize
+                    {
                         break 'drain_file;
                     }
                 }
                 thread::yield_now();
             }
+            while active_readers.load(Ordering::SeqCst) > 0 {
+                thread::yield_now();
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct FileBufferSegment {
+    /// The segment ID of the serialized segment
+    segment_id: TransactionId,
+    /// The binary offset within the file where the segment is stored
+    offset: u64,
+}
+
+pub struct FileAlloc {
+    pub alloc: RangeAllocator<usize>,
+    pub segments: Vec<FileBufferSegment>,
+}
+
+impl FileAlloc {
+    pub fn new(size: usize) -> Self {
+        Self {
+            alloc: RangeAllocator::new(0..size),
+            segments: Vec::with_capacity(size / 512),
         }
     }
 }
@@ -40,7 +74,8 @@ impl Drop for FilePool {
 /// A set of buffers backed by a single [`File`].
 pub struct FileBufferAlloc {
     file: File,
-    alloc: Mutex<RangeAllocator<usize>>,
+    alloc: Mutex<FileAlloc>,
+    active_readers: AtomicUsize,
 }
 
 impl FilePool {
@@ -83,7 +118,8 @@ impl FilePool {
             let file = File::open(entry.path())?;
             files.push(FileBufferAlloc {
                 file,
-                alloc: Mutex::new(RangeAllocator::new(0..file_size as usize)),
+                alloc: Mutex::new(FileAlloc::new(file_size as usize)),
+                active_readers: AtomicUsize::new(0),
             });
         }
 
@@ -125,7 +161,7 @@ impl FilePool {
     pub fn try_alloc_segment(&self, size: usize) -> Option<FileSlice> {
         for filer_buffer in &self.files {
             if let Ok(mut alloc_access) = filer_buffer.alloc.try_lock() {
-                if let Ok(range) = alloc_access.allocate_range(size) {
+                if let Ok(range) = alloc_access.alloc.allocate_range(size) {
                     return Some(FileSlice {
                         file_buffer: unsafe { &*(filer_buffer as *const FileBufferAlloc) },
                         offset: range.start as u64,
@@ -151,9 +187,62 @@ pub struct FileSlice {
     written_bytes: usize,
 }
 
+impl Drop for FileSlice {
+    fn drop(&mut self) {
+        self.file_buffer
+            .alloc
+            .lock()
+            .unwrap()
+            .alloc
+            .free_range(self.offset as usize..self.offset as usize + self.size);
+    }
+}
+
+pub struct FileSliceReader {
+    /// Reference to underlying [`FileBufferAlloc`].
+    file_buffer: &'static FileBufferAlloc,
+    /// Offset within the file where the slice starts.
+    offset: u64,
+    /// Size of the slice.
+    size: usize,
+    /// Number of bytes read from the slice.
+    read_bytes: usize,
+}
+
+impl AsyncRead for FileSliceReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let buf_size = buf.remaining();
+        if (self.read_bytes + buf_size) > self.size {
+            return Poll::Ready(Err(std::io::Error::new(
+                ErrorKind::Other,
+                "Buffer overflow",
+            )));
+        }
+        let read_bytes = self
+            .file_buffer
+            .file
+            .read_at(buf.initialize_unfilled(), self.offset)?;
+        self.read_bytes += read_bytes;
+        buf.advance(read_bytes);
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for FileSliceReader {
+    fn drop(&mut self) {
+        self.file_buffer
+            .active_readers
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 #[async_trait::async_trait]
 impl StorageLayer for FilePool {
     type Writer = FileSlice;
+    type Reader = FileSliceReader;
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
@@ -164,6 +253,36 @@ impl StorageLayer for FilePool {
             }
             sleep(BUFFER_ACQ_RETRY_DELAY).await;
         }
+    }
+
+    async fn get_segment(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader> {
+        for file in &self.files {
+            let alloc_access = file.alloc.lock().unwrap();
+            if let Some(segment) = alloc_access
+                .segments
+                .iter()
+                .find(|s| s.segment_id == segment_id)
+                .copied()
+            {
+                drop(alloc_access);
+
+                let mut txn_size_buf = [0u8; 4];
+                file.file.read_exact_at(
+                    &mut txn_size_buf,
+                    segment.offset + size_of::<TransactionId>() as u64,
+                )?;
+                let txn_size = u32::from_be_bytes(txn_size_buf) as usize;
+                return Ok(FileSliceReader {
+                    file_buffer: unsafe { &*(file as *const FileBufferAlloc) },
+                    offset: segment.offset
+                        + size_of::<TransactionId>() as u64
+                        + size_of::<u32>() as u64,
+                    size: txn_size,
+                    read_bytes: 0,
+                });
+            }
+        }
+        Err(ReservoirError::NoSuchSegment(segment_id))
     }
 }
 
@@ -191,15 +310,5 @@ impl AsyncWrite for FileSlice {
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
-    }
-}
-
-impl Drop for FileSlice {
-    fn drop(&mut self) {
-        self.file_buffer
-            .alloc
-            .lock()
-            .unwrap()
-            .free_range(self.offset as usize..self.offset as usize + self.size);
     }
 }

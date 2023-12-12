@@ -37,8 +37,8 @@ where
         &self,
         size: usize,
     ) -> ReservoirResult<WriteHandle<S::Writer, N>> {
-        // We need to store the payload + the transaction ID + the CRC checksum
-        let buffer_size = size + size_of::<TransactionId>() + size_of::<u32>();
+        // We need to store the payload + txn size + the transaction ID + the CRC checksum
+        let buffer_size = size + size_of::<u32>() + size_of::<TransactionId>() + size_of::<u32>();
         let data_writer = self.storage.get_write_buffer(buffer_size).await?;
         let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::AcqRel));
         Ok(WriteHandle::new(

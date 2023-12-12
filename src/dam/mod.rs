@@ -84,12 +84,9 @@ pub type AsyncDamFlusher = DamFlusher<NopNotifier>;
 #[cfg(feature = "io_uring")]
 mod io_uring;
 #[cfg(feature = "io_uring")]
-pub use io_uring::DamFlusher;
+pub use io_uring::*;
 
-#[cfg(not(feature = "io_uring"))]
 mod fs;
-
-#[cfg(not(feature = "io_uring"))]
-pub use fs::DamFlusher;
+pub use fs::*;
 
 pub use flush_strategy::FlushStrategy;

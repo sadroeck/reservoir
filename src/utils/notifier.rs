@@ -34,6 +34,7 @@ impl FlushNotifier for NopNotifier {
     }
 }
 
+// TODO: Replace with simpler signaling mechanism just using the offset of the fsync
 impl FlushNotifier for Arc<Event> {
     type Waiter = Pin<Box<EventListener<()>>>;
 
