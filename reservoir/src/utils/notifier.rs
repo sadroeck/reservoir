@@ -1,7 +1,8 @@
-use event_listener::{Event, EventListener, IntoNotification};
 use std::future::{ready, Future};
 use std::pin::Pin;
 use std::sync::Arc;
+
+pub use event_listener::{Event, EventListener, IntoNotification};
 
 pub trait FlushNotifier: Clone + Send + Sync + 'static {
     type Waiter: Future<Output = ()> + Send;

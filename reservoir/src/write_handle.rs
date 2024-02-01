@@ -36,6 +36,10 @@ where
         }
     }
 
+    pub fn transaction_id(&self) -> TransactionId {
+        self.id
+    }
+
     pub async fn write_bytes(&mut self, buf: &[u8]) -> ReservoirResult<()> {
         // TODO: Check max transaction size
         self.data_writer.write_u64(self.id.into()).await?;
