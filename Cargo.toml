@@ -7,6 +7,11 @@ edition = "2021"
 default = []
 io_uring = []
 
+[lib]
+name = "reservoir_ffi"
+path = "src/lib.rs"
+crate-type = ["lib", "staticlib"]
+
 [dependencies]
 async-trait = "0.1"
 crc32fast = "1.2"
