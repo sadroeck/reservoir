@@ -6,8 +6,10 @@ use reservoir::{
 };
 use std::ffi::{c_char, c_void};
 use std::path::Path;
+use std::ptr::null;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::runtime::{Handle, Runtime};
 
 const ONE_MEBIBYTE: u64 = 1024 * 1024;
@@ -19,6 +21,10 @@ pub struct ReservoirImpl {
     /// A handle to the dam thread.
     /// This is used to ensure that the dam thread is joined when the ReservoirImpl is dropped.
     dam_thread: Option<std::thread::JoinHandle<()>>,
+    /// Buffer to deserialize any reads from the reservoir
+    /// The maximum size of a transaction is 1 MiB.
+    /// Note: This is to offer mmap type behavior to any readers.
+    mem_buffer: Vec<u8>,
 }
 
 impl ReservoirImpl {
@@ -41,6 +47,7 @@ impl ReservoirImpl {
         Self {
             reservoir,
             dam_thread: Some(dam_thread),
+            mem_buffer: vec![0u8; ONE_MEBIBYTE as usize],
         }
     }
 
@@ -120,16 +127,32 @@ pub unsafe fn reservoir_handle_write_bytes(
 }
 
 #[no_mangle]
-pub unsafe fn reservoir_get_transaction(reservoir: *mut ReservoirImpl, transaction_id: u64) -> i32 {
+pub unsafe fn reservoir_get_transaction(
+    reservoir: *mut ReservoirImpl,
+    transaction_id: u64,
+    data_out: *mut *const u8,
+) -> i32 {
     let transaction_id = TransactionId::from(transaction_id);
-    let reservoir = unsafe { &*(reservoir) };
-    match reservoir
-        .runtime_handle()
-        .block_on(reservoir.reservoir.get_transaction(transaction_id))
-    {
-        Ok(reader) => 0,
-        Err(err) => result_into_error_no(err),
-    }
+    let reservoir = unsafe { &mut *(reservoir) };
+    *data_out = null();
+    reservoir.mem_buffer.clear();
+
+    reservoir.runtime_handle().block_on(async {
+        match reservoir.reservoir.get_transaction(transaction_id).await {
+            Ok(mut reader) => {
+                reader
+                    .read_to_end(&mut reservoir.mem_buffer)
+                    .await
+                    .map(|_| {
+                        // Set the output pointer to the start of the buffer
+                        *data_out = reservoir.mem_buffer.as_mut_ptr();
+                        0
+                    })
+                    .unwrap_or_else(|err| err.raw_os_error().unwrap_or(-1))
+            }
+            Err(err) => result_into_error_no(err),
+        }
+    })
 }
 
 #[no_mangle]
