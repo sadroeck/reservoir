@@ -237,7 +237,7 @@ impl Drop for FileSliceReader {
     fn drop(&mut self) {
         self.file_buffer
             .active_readers
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            .fetch_sub(1, Ordering::SeqCst);
     }
 }
 #[async_trait::async_trait]

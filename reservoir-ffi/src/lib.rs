@@ -1,8 +1,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 use reservoir::{
-    DamLog, Event, FilePool, FileSlice, FlushStrategy, Reservoir, ReservoirError, ReservoirResult,
-    SyncDamFlusher, TransactionId, WriteHandle,
+    DamIterator, DamLog, Event, FilePool, FileSlice, FlushStrategy, Reservoir, ReservoirError,
+    ReservoirResult, SyncDamFlusher, TransactionId, WriteHandle,
 };
 use std::ffi::{c_char, c_void};
 use std::path::Path;
@@ -25,6 +25,9 @@ pub struct ReservoirImpl {
     /// The maximum size of a transaction is 1 MiB.
     /// Note: This is to offer mmap type behavior to any readers.
     mem_buffer: Vec<u8>,
+    /// The dam log.
+    /// The dam log is used to store transaction IDs and their corresponding checksums in order of commit.
+    dam_log: DamLog,
 }
 
 impl ReservoirImpl {
@@ -35,7 +38,8 @@ impl ReservoirImpl {
         let storage = FilePool::open(Path::new(path), 8, 32 * ONE_MEBIBYTE)
             .expect("Could not open file pool");
         let dam_log = DamLog::new(Path::new("./dam.log")).expect("Could not open/create Dam log");
-        let dam = SyncDamFlusher::new(dam_log, FlushStrategy::Interval(SYNC_INTERVAL))
+        let dam_for_thread = dam_log.clone();
+        let dam = SyncDamFlusher::new(dam_for_thread, FlushStrategy::Interval(SYNC_INTERVAL))
             .expect("Could not create dam flusher");
         let start_tx_id = dam.highest_committed_transaction_id();
         let (dam_thread, dam_handle) = dam.spawn_thread();
@@ -48,6 +52,7 @@ impl ReservoirImpl {
             reservoir,
             dam_thread: Some(dam_thread),
             mem_buffer: vec![0u8; ONE_MEBIBYTE as usize],
+            dam_log,
         }
     }
 
@@ -58,6 +63,16 @@ impl ReservoirImpl {
 
     fn reserve(&self, size: usize) -> ReservoirResult<WriteHandle<FileSlice, Arc<Event>>> {
         Self::RUNTIME.with(|rt| rt.block_on(self.reservoir.new_transaction_fixed(size)))
+    }
+
+    fn read_into_buffer_blocking(&mut self, transaction_id: TransactionId) -> ReservoirResult<()> {
+        Self::RUNTIME.with(|rt| {
+            rt.block_on(async {
+                let mut reader = self.reservoir.get_transaction(transaction_id).await?;
+                reader.read_to_end(&mut self.mem_buffer).await?;
+                Ok(())
+            })
+        })
     }
 }
 
@@ -137,22 +152,14 @@ pub unsafe fn reservoir_get_transaction(
     *data_out = null();
     reservoir.mem_buffer.clear();
 
-    reservoir.runtime_handle().block_on(async {
-        match reservoir.reservoir.get_transaction(transaction_id).await {
-            Ok(mut reader) => {
-                reader
-                    .read_to_end(&mut reservoir.mem_buffer)
-                    .await
-                    .map(|_| {
-                        // Set the output pointer to the start of the buffer
-                        *data_out = reservoir.mem_buffer.as_mut_ptr();
-                        0
-                    })
-                    .unwrap_or_else(|err| err.raw_os_error().unwrap_or(-1))
-            }
-            Err(err) => result_into_error_no(err),
-        }
-    })
+    reservoir
+        .read_into_buffer_blocking(transaction_id)
+        .map(|_| {
+            // Set the output pointer to the start of the buffer
+            *data_out = reservoir.mem_buffer.as_mut_ptr();
+            0
+        })
+        .unwrap_or_else(result_into_error_no)
 }
 
 #[no_mangle]
@@ -175,6 +182,55 @@ pub unsafe fn reservoir_handle_commit(handle: *mut WriteHandleImpl) -> i32 {
 pub unsafe fn reservoir_handle_free(handle: *mut c_void) {
     if !handle.is_null() {
         let _ = Box::from_raw(handle as *mut WriteHandleImpl);
+    }
+}
+
+#[no_mangle]
+pub unsafe fn reservoir_get_iter(reservoir: *mut ReservoirImpl, iter_out: *mut *const c_void) {
+    let reservoir = &mut *(reservoir);
+    let iter = reservoir.dam_log.clone().owned_iter();
+    *iter_out = Box::into_raw(Box::new(iter)) as *mut c_void
+}
+
+#[no_mangle]
+pub unsafe fn reservoir_iter_next(
+    reservoir_impl: *mut ReservoirImpl,
+    iter: *mut DamIterator,
+    tx_id: *mut u64,
+    size: &mut usize,
+    lsn: *mut u64,
+    data_out: *mut *const u8,
+    is_done: *mut bool,
+) -> i32 {
+    let iter = &mut *(iter);
+    let reservoir = &mut *(reservoir_impl);
+    reservoir.mem_buffer.clear();
+    match iter.next() {
+        Some((serialized_txn, file_offset)) => {
+            *tx_id = serialized_txn.id.into();
+            *size = serialized_txn.size as usize;
+            *lsn = file_offset.into();
+            *is_done = false;
+            reservoir
+                .read_into_buffer_blocking(serialized_txn.id)
+                .map(|_| {
+                    // Set the output pointer to the start of the buffer
+                    *data_out = reservoir.mem_buffer.as_mut_ptr();
+                    0
+                })
+                .unwrap_or_else(result_into_error_no)
+        }
+        None => {
+            *is_done = true;
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe fn reservoir_iter_free(iter: *mut DamIterator) {
+    if !iter.is_null() {
+        let _ = Box::from_raw(iter);
     }
 }
 
