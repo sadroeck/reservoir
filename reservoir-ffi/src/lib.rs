@@ -64,13 +64,13 @@ impl ReservoirImpl {
         &mut self,
         transaction_id: TransactionId,
         mem_buffer: &mut Vec<u8>,
-    ) -> ReservoirResult<()> {
+    ) -> ReservoirResult<usize> {
         mem_buffer.clear();
         Self::RUNTIME.with(|rt| {
             rt.block_on(async {
                 let mut reader = self.reservoir.get_transaction(transaction_id).await?;
                 reader.read_to_end(mem_buffer).await?;
-                Ok(())
+                Ok(reader.size)
             })
         })
     }
@@ -162,13 +162,15 @@ pub unsafe fn reservoir_get_transaction(
     read_buffer: *mut ReadBuffer,
     transaction_id: u64,
     data_out: *mut *const u8,
+    size_out: *mut u64,
 ) -> i32 {
     let transaction_id = TransactionId::from(transaction_id);
     let reservoir = unsafe { &mut *(reservoir) };
     let read_buffer = unsafe { &mut *(read_buffer) };
     reservoir
         .read_into_buffer_blocking(transaction_id, &mut read_buffer.mem_buffer)
-        .map(|_| {
+        .map(|size| {
+            *size_out = size as u64;
             *data_out = read_buffer.mem_buffer.as_mut_ptr();
             0
         })

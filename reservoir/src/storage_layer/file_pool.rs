@@ -205,7 +205,7 @@ pub struct FileSliceReader {
     /// Offset within the file where the slice starts.
     offset: u64,
     /// Size of the slice.
-    size: usize,
+    pub size: usize,
     /// Number of bytes read from the slice.
     read_bytes: usize,
 }
