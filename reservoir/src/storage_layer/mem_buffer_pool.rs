@@ -214,7 +214,7 @@ impl StorageLayer for MemBufferPool {
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
-    async fn get_write_buffer(&self, size: usize) -> ReservoirResult<Self::Writer> {
+    async fn write_transaction(&self, size: usize) -> ReservoirResult<Self::Writer> {
         loop {
             match self.try_alloc_segment(size) {
                 Some(segment) => return Ok(segment),
@@ -225,7 +225,7 @@ impl StorageLayer for MemBufferPool {
         }
     }
 
-    async fn get_segment(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader> {
+    async fn read_transaction(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader> {
         let alloc_access = self.alloc.lock().unwrap();
         if let Some(segment) = alloc_access
             .segments
@@ -268,7 +268,7 @@ mod test {
         let payload = b"Hello world";
         {
             let mut writer = pool
-                .get_write_buffer(payload.len())
+                .write_transaction(payload.len())
                 .await
                 .expect("Could not allocate buffer");
             writer
@@ -287,7 +287,7 @@ mod test {
             let mut segments = vec![];
             for _ in 0..10 {
                 let mut writer = pool
-                    .get_write_buffer(payload.len())
+                    .write_transaction(payload.len())
                     .await
                     .expect("Could not allocate buffer");
                 writer
@@ -306,13 +306,13 @@ mod test {
         let mut segments = vec![];
         for _ in 0..5 {
             let writer = pool
-                .get_write_buffer(10)
+                .write_transaction(10)
                 .await
                 .expect("Could not allocate buffer");
             segments.push(writer);
         }
 
         // We should not be able to allocate another segment
-        assert!(pool.get_write_buffer(10).now_or_never().is_none())
+        assert!(pool.write_transaction(10).now_or_never().is_none())
     }
 }

@@ -7,7 +7,7 @@ use std::mem::size_of;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-/// A reservoir is structure that allows for the creation of uniquely identified write
+/// A reservoir is a structure that allows for the creation of uniquely identified write
 /// transactions into dedicated buffers. These unordered transactions can then be committed to the
 /// underlying append-only transaction ID log.
 pub struct Reservoir<S, N: FlushNotifier> {
@@ -39,7 +39,7 @@ where
     ) -> ReservoirResult<WriteHandle<S::Writer, N>> {
         // We need to store the payload + txn size + the transaction ID + the CRC checksum
         let buffer_size = size + size_of::<u32>() + size_of::<TransactionId>() + size_of::<u32>();
-        let data_writer = self.storage.get_write_buffer(buffer_size).await?;
+        let data_writer = self.storage.write_transaction(buffer_size).await?;
         let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::AcqRel));
         Ok(WriteHandle::new(
             tx_id,
@@ -48,7 +48,7 @@ where
         ))
     }
 
-    /// Creates a new write transactions with a variable size.
+    /// Creates a new write transaction with a variable size.
     /// Note: If your transaction has a predetermined size, prefer to use [`new_transaction_fixed`].
     pub async fn new_transaction(&self) -> ReservoirResult<WriteHandle<S::Writer, N>> {
         todo!("new_transaction")

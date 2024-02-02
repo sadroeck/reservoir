@@ -247,7 +247,7 @@ impl StorageLayer for FilePool {
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
-    async fn get_write_buffer(&self, size: usize) -> ReservoirResult<Self::Writer> {
+    async fn write_transaction(&self, size: usize) -> ReservoirResult<Self::Writer> {
         loop {
             if let Some(slice) = self.try_alloc_segment(size) {
                 return Ok(slice);
@@ -256,7 +256,7 @@ impl StorageLayer for FilePool {
         }
     }
 
-    async fn get_segment(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader> {
+    async fn read_transaction(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader> {
         for file in &self.files {
             let alloc_access = file.alloc.lock().unwrap();
             if let Some(segment) = alloc_access

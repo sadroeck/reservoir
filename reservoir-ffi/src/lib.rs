@@ -1,3 +1,5 @@
+#![allow(clippy::missing_safety_doc)]
+
 use reservoir::{
     DamLog, Event, FilePool, FileSlice, FlushStrategy, Reservoir, ReservoirError, ReservoirResult,
     SyncDamFlusher, WriteHandle,
