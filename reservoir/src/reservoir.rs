@@ -53,4 +53,8 @@ where
     pub async fn new_transaction(&self) -> ReservoirResult<WriteHandle<S::Writer, N>> {
         todo!("new_transaction")
     }
+
+    pub async fn get_transaction(&self, id: TransactionId) -> ReservoirResult<S::Reader> {
+        self.storage.read_transaction(id).await
+    }
 }

@@ -10,6 +10,13 @@ impl fmt::Display for TransactionId {
     }
 }
 
+impl From<u64> for TransactionId {
+    #[inline]
+    fn from(value: u64) -> Self {
+        TransactionId(value)
+    }
+}
+
 impl From<TransactionId> for u64 {
     #[inline]
     fn from(value: TransactionId) -> Self {

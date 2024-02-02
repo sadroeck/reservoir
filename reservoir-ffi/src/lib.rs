@@ -2,7 +2,7 @@
 
 use reservoir::{
     DamLog, Event, FilePool, FileSlice, FlushStrategy, Reservoir, ReservoirError, ReservoirResult,
-    SyncDamFlusher, WriteHandle,
+    SyncDamFlusher, TransactionId, WriteHandle,
 };
 use std::ffi::{c_char, c_void};
 use std::path::Path;
@@ -19,16 +19,6 @@ pub struct ReservoirImpl {
     /// A handle to the dam thread.
     /// This is used to ensure that the dam thread is joined when the ReservoirImpl is dropped.
     dam_thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Drop for ReservoirImpl {
-    fn drop(&mut self) {
-        self.dam_thread
-            .take()
-            .unwrap()
-            .join()
-            .expect("Could not join dam thread");
-    }
 }
 
 impl ReservoirImpl {
@@ -105,7 +95,12 @@ pub unsafe fn reservoir_reserve(
 #[no_mangle]
 pub unsafe fn reservoir_free(reservoir: *mut ReservoirImpl) {
     if !reservoir.is_null() {
-        let _ = Box::from_raw(reservoir);
+        let mut boxed = Box::from_raw(reservoir);
+        let dam_thread = boxed.dam_thread.take();
+        drop(boxed);
+        if let Some(handle) = dam_thread {
+            handle.join().unwrap();
+        }
     }
 }
 
@@ -122,6 +117,19 @@ pub unsafe fn reservoir_handle_write_bytes(
         .block_on(handle.reservoir_handle.write_bytes(bytes))
         .map(|_| 0)
         .unwrap_or_else(result_into_error_no)
+}
+
+#[no_mangle]
+pub unsafe fn reservoir_get_transaction(reservoir: *mut ReservoirImpl, transaction_id: u64) -> i32 {
+    let transaction_id = TransactionId::from(transaction_id);
+    let reservoir = unsafe { &*(reservoir) };
+    match reservoir
+        .runtime_handle()
+        .block_on(reservoir.reservoir.get_transaction(transaction_id))
+    {
+        Ok(reader) => 0,
+        Err(err) => result_into_error_no(err),
+    }
 }
 
 #[no_mangle]
