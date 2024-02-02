@@ -2,7 +2,7 @@ use reservoir::{
     DamLog, Event, FilePool, FileSlice, FlushStrategy, Reservoir, ReservoirError, ReservoirResult,
     SyncDamFlusher, WriteHandle,
 };
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,13 +68,19 @@ pub struct WriteHandleImpl {
 }
 
 #[no_mangle]
-pub fn reservoir_new(path: &str) -> *mut ReservoirImpl {
-    let boxed = Box::new(ReservoirImpl::new(path));
-    Box::leak(boxed) as *mut ReservoirImpl
+pub unsafe fn reservoir_new(path: *const c_char, reservoir_out: *mut *mut ReservoirImpl) -> i32 {
+    match unsafe { std::ffi::CStr::from_ptr(path) }.to_str() {
+        Ok(path) => {
+            let boxed = Box::new(ReservoirImpl::new(path));
+            *reservoir_out = Box::leak(boxed) as *mut ReservoirImpl;
+            0
+        }
+        Err(_) => 30_000,
+    }
 }
 
 #[no_mangle]
-fn reservoir_reserve(
+pub unsafe fn reservoir_reserve(
     reservoir: *mut ReservoirImpl,
     size: usize,
     handle_out: *mut *mut c_void,
@@ -96,7 +102,9 @@ fn reservoir_reserve(
 
 #[no_mangle]
 pub unsafe fn reservoir_free(reservoir: *mut ReservoirImpl) {
-    let _ = Box::from_raw(reservoir);
+    if !reservoir.is_null() {
+        let _ = Box::from_raw(reservoir);
+    }
 }
 
 #[no_mangle]
@@ -132,7 +140,9 @@ pub unsafe fn reservoir_handle_commit(handle: *mut WriteHandleImpl) -> i32 {
 
 #[no_mangle]
 pub unsafe fn reservoir_handle_free(handle: *mut c_void) {
-    let _ = Box::from_raw(handle as *mut WriteHandleImpl);
+    if !handle.is_null() {
+        let _ = Box::from_raw(handle as *mut WriteHandleImpl);
+    }
 }
 
 #[inline]

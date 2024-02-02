@@ -85,19 +85,20 @@ impl FilePool {
     }
 
     pub fn open(path: &Path, file_count: usize, file_size: u64) -> std::io::Result<Self> {
+        let path = Path::new("/tmp/memsql/reservoir").join(path);
         if !path.exists() {
-            Self::create(path, file_count, file_size)?;
+            Self::create(&path, file_count, file_size)?;
         }
 
         // Check if the directory is empty
-        if std::fs::read_dir(path)?.count() > file_count {
+        if std::fs::read_dir(&path)?.count() > file_count {
             return Err(std::io::Error::new(
                 ErrorKind::AlreadyExists,
                 format!("Cannot create file pool at {path:?}: too many existing files"),
             ));
         }
 
-        let mut dir_entry = std::fs::read_dir(path)?;
+        let mut dir_entry = std::fs::read_dir(&path)?;
         let mut files = Vec::with_capacity(file_count);
         for entry in &mut dir_entry {
             let entry = entry?;
