@@ -56,7 +56,7 @@ impl ReservoirImpl {
         Self::RUNTIME.with(|rt| rt.handle().clone())
     }
 
-    fn reserve(&self, size: usize) -> ReservoirResult<WriteHandle<FileSlice, Arc<Event>>> {
+    fn reserve(&self, size: u32) -> ReservoirResult<WriteHandle<FileSlice, Arc<Event>>> {
         Self::RUNTIME.with(|rt| rt.block_on(self.reservoir.new_transaction_fixed(size)))
     }
 
@@ -111,7 +111,7 @@ pub unsafe fn reservoir_new(path: *const c_char, reservoir_out: *mut *mut Reserv
 #[no_mangle]
 pub unsafe fn reservoir_reserve(
     reservoir: *mut ReservoirImpl,
-    size: usize,
+    size: u32,
     handle_out: *mut *mut c_void,
 ) -> i32 {
     let reservoir = unsafe { &*(reservoir) };
@@ -142,7 +142,7 @@ pub unsafe fn reservoir_free(reservoir: *mut ReservoirImpl) {
 }
 
 #[no_mangle]
-pub unsafe fn reservoir_handle_write_bytes(
+pub unsafe fn reservoir_handle_write_all_bytes(
     handle: *mut WriteHandleImpl,
     bytes: *const u8,
     size: usize,
@@ -151,7 +151,22 @@ pub unsafe fn reservoir_handle_write_bytes(
     let bytes = unsafe { std::slice::from_raw_parts(bytes, size) };
     handle
         .runtime_handle
-        .block_on(handle.reservoir_handle.write_bytes(bytes))
+        .block_on(handle.reservoir_handle.write_all_bytes(bytes))
+        .map(|_| 0)
+        .unwrap_or_else(result_into_error_no)
+}
+
+#[no_mangle]
+pub unsafe fn reservoir_handle_add_bytes(
+    handle: *mut WriteHandleImpl,
+    bytes: *const u8,
+    size: usize,
+) -> i32 {
+    let handle = &mut *handle;
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, size) };
+    handle
+        .runtime_handle
+        .block_on(handle.reservoir_handle.add_bytes(bytes))
         .map(|_| 0)
         .unwrap_or_else(result_into_error_no)
 }

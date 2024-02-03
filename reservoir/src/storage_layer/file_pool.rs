@@ -1,4 +1,4 @@
-use crate::{ReservoirError, ReservoirResult, StorageLayer, TransactionId};
+use crate::{ReservoirError, ReservoirResult, StorageLayer, StorageWriter, TransactionId};
 use range_alloc::RangeAllocator;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -163,10 +163,10 @@ impl FilePool {
         Ok(())
     }
 
-    pub fn try_alloc_segment(&self, size: usize) -> Option<FileSlice> {
+    pub fn try_alloc_segment(&self, size: u32) -> Option<FileSlice> {
         for filer_buffer in &self.files {
             if let Ok(mut alloc_access) = filer_buffer.alloc.try_lock() {
-                if let Ok(range) = alloc_access.alloc.allocate_range(size) {
+                if let Ok(range) = alloc_access.alloc.allocate_range(size as usize) {
                     return Some(FileSlice {
                         file_buffer: unsafe { &*(filer_buffer as *const FileBufferAlloc) },
                         offset: range.start as u64,
@@ -187,9 +187,15 @@ pub struct FileSlice {
     /// Offset within the file where the slice starts.
     offset: u64,
     /// Size of the slice.
-    size: usize,
+    size: u32,
     /// Number of bytes written to the slice.
     written_bytes: usize,
+}
+
+impl StorageWriter for FileSlice {
+    fn payload_size(&self) -> u32 {
+        self.size
+    }
 }
 
 impl Drop for FileSlice {
@@ -199,7 +205,7 @@ impl Drop for FileSlice {
             .lock()
             .unwrap()
             .alloc
-            .free_range(self.offset as usize..self.offset as usize + self.size);
+            .free_range(self.offset as usize..self.offset as usize + self.size as usize);
     }
 }
 
@@ -252,7 +258,7 @@ impl StorageLayer for FilePool {
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
-    async fn write_transaction(&self, size: usize) -> ReservoirResult<Self::Writer> {
+    async fn write_transaction(&self, size: u32) -> ReservoirResult<Self::Writer> {
         loop {
             if let Some(slice) = self.try_alloc_segment(size) {
                 return Ok(slice);
@@ -299,7 +305,7 @@ impl AsyncWrite for FileSlice {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let buf_size = buf.len();
-        if (self.written_bytes + buf_size) > self.size {
+        if (self.written_bytes + buf_size) > self.size as usize {
             return Poll::Ready(Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Buffer overflow",

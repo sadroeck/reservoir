@@ -35,10 +35,11 @@ where
     /// Create a new write transaction with a fixed size.
     pub async fn new_transaction_fixed(
         &self,
-        size: usize,
+        size: u32,
     ) -> ReservoirResult<WriteHandle<S::Writer, N>> {
         // We need to store the payload + txn size + the transaction ID + the CRC checksum
-        let buffer_size = size + size_of::<u32>() + size_of::<TransactionId>() + size_of::<u32>();
+        let buffer_size =
+            size + (size_of::<u32>() + size_of::<TransactionId>() + size_of::<u32>()) as u32;
         let data_writer = self.storage.write_transaction(buffer_size).await?;
         let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::AcqRel));
         Ok(WriteHandle::new(

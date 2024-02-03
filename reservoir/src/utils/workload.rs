@@ -28,8 +28,10 @@ async fn write_payload(
     reservoir: &Reservoir<impl StorageLayer, impl FlushNotifier>,
     payload: &[u8],
 ) -> ReservoirResult<()> {
-    let mut tx = reservoir.new_transaction_fixed(payload.len()).await?;
-    tx.write_bytes(payload).await?;
+    let mut tx = reservoir
+        .new_transaction_fixed(payload.len() as u32)
+        .await?;
+    tx.write_all_bytes(payload).await?;
     tx.commit().await?;
     Ok(())
 }

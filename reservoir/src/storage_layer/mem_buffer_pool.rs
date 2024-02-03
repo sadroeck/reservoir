@@ -1,4 +1,4 @@
-use crate::{ReservoirError, ReservoirResult, StorageLayer, TransactionId};
+use crate::{ReservoirError, ReservoirResult, StorageLayer, StorageWriter, TransactionId};
 use range_alloc::RangeAllocator;
 use std::io::Error;
 use std::mem::size_of;
@@ -43,9 +43,9 @@ impl MemBufferPool {
     /// Attempts to allocate a segment of the specified size.
     /// Returns `None` if the pool is exhausted.
     /// The returned segment is valid until the pool is dropped.
-    pub fn try_alloc_segment(&self, size: usize) -> Option<PoolSegment> {
+    pub fn try_alloc_segment(&self, size: u32) -> Option<PoolSegment> {
         let mut alloc = self.alloc.lock().unwrap();
-        let range = alloc.alloc.allocate_range(size).ok()?;
+        let range = alloc.alloc.allocate_range(size as usize).ok()?;
         Some(PoolSegment {
             // Safety: The [`Drop`] implementation of [`PoolSegment`] ensures that the pool is not
             // dropped before the segment.
@@ -87,9 +87,15 @@ pub struct PoolSegment {
     /// Pointer to the start of the segment.
     buffer_start: *mut u8,
     /// Size of the segment.
-    size: usize,
+    size: u32,
     /// Number of bytes written to the segment.
     bytes_written: usize,
+}
+
+impl StorageWriter for PoolSegment {
+    fn payload_size(&self) -> u32 {
+        self.size
+    }
 }
 
 impl PoolSegment {
@@ -107,7 +113,7 @@ impl PoolSegment {
 
     /// Returns the size of the segment.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u32 {
         self.size
     }
 
@@ -130,7 +136,7 @@ impl Drop for PoolSegment {
         let mut alloc = self.pool.alloc.lock().unwrap();
         alloc
             .alloc
-            .free_range(start_offset..start_offset + self.size);
+            .free_range(start_offset..start_offset + self.size as usize);
     }
 }
 
@@ -138,13 +144,13 @@ impl Deref for PoolSegment {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.buffer_start, self.size) }
+        unsafe { std::slice::from_raw_parts(self.buffer_start, self.size as usize) }
     }
 }
 
 impl DerefMut for PoolSegment {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { std::slice::from_raw_parts_mut(self.buffer_start, self.size) }
+        unsafe { std::slice::from_raw_parts_mut(self.buffer_start, self.size as usize) }
     }
 }
 
@@ -156,7 +162,7 @@ impl AsyncWrite for PoolSegment {
     ) -> Poll<Result<usize, Error>> {
         let buf_size = buf.len();
         let bytes_written = self.bytes_written;
-        if (bytes_written + buf_size) > self.size {
+        if (bytes_written + buf_size) > self.size as usize {
             return Poll::Ready(Err(Error::new(
                 std::io::ErrorKind::Other,
                 "Buffer overflow",
@@ -168,6 +174,7 @@ impl AsyncWrite for PoolSegment {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        // TODO: fsync the individual files efficiently
         Poll::Ready(Ok(()))
     }
 
@@ -214,7 +221,7 @@ impl StorageLayer for MemBufferPool {
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
-    async fn write_transaction(&self, size: usize) -> ReservoirResult<Self::Writer> {
+    async fn write_transaction(&self, size: u32) -> ReservoirResult<Self::Writer> {
         loop {
             match self.try_alloc_segment(size) {
                 Some(segment) => return Ok(segment),
@@ -268,7 +275,7 @@ mod test {
         let payload = b"Hello world";
         {
             let mut writer = pool
-                .write_transaction(payload.len())
+                .write_transaction(payload.len() as u32)
                 .await
                 .expect("Could not allocate buffer");
             writer
@@ -287,7 +294,7 @@ mod test {
             let mut segments = vec![];
             for _ in 0..10 {
                 let mut writer = pool
-                    .write_transaction(payload.len())
+                    .write_transaction(payload.len() as u32)
                     .await
                     .expect("Could not allocate buffer");
                 writer
