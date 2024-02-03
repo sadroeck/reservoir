@@ -163,7 +163,11 @@ impl DamLog {
     pub fn new(log_file: &Path) -> ReservoirResult<Self> {
         let (file, current_offset) = if log_file.exists() {
             // If the file already exists, just verify the size and open it
-            let file = File::options().read(true).write(true).open(log_file)?;
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .append(false)
+                .open(log_file)?;
             let current_file_size = file.metadata()?.len();
             if current_file_size != LOG_FILE_SIZE as u64 {
                 return Err(std::io::Error::new(

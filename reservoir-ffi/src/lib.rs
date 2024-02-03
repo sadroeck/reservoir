@@ -240,7 +240,7 @@ pub unsafe fn reservoir_iter_next(
         Some((serialized_txn, file_offset)) => {
             *tx_id = serialized_txn.id.into();
             *size = serialized_txn.size as usize;
-            *lsn = file_offset.into();
+            *lsn = file_offset;
             *is_done = false;
             reservoir
                 .read_into_buffer_blocking(serialized_txn.id, &mut iter_handle.mem_buffer)

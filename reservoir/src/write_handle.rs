@@ -47,6 +47,7 @@ where
         self.data_writer.write_all(buf).await?;
         self.crc.update(buf);
         self.payload_bytes += buf.len() as u32;
+        self.data_writer.flush().await?;
         Ok(())
     }
 

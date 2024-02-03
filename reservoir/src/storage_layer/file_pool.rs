@@ -116,7 +116,11 @@ impl FilePool {
                 ));
             }
 
-            let file = File::open(entry.path())?;
+            let file = File::options()
+                .create(true)
+                .write(true)
+                .read(true)
+                .open(entry.path())?;
             files.push(FileBufferAlloc {
                 file,
                 alloc: Mutex::new(FileAlloc::new(file_size as usize)),
@@ -141,8 +145,8 @@ impl FilePool {
         info!("Creating pool dir {path:?}");
         std::fs::create_dir_all(path)?;
 
-        // Optimistically check the amount of available space. This isn't perfect, but better
-        // than failing halfway through.
+        // Optimistically, check the amount of available space.
+        // This isn't perfect, but better than failing halfway through.
         if fs2::available_space(path)? < file_size * file_count as u64 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -240,6 +244,7 @@ impl Drop for FileSliceReader {
             .fetch_sub(1, Ordering::SeqCst);
     }
 }
+
 #[async_trait::async_trait]
 impl StorageLayer for FilePool {
     type Writer = FileSlice;
