@@ -6,7 +6,7 @@ use reservoir::{
 };
 use std::ffi::{c_char, c_void};
 use std::path::Path;
-use std::ptr::null;
+use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -101,7 +101,7 @@ pub unsafe fn reservoir_new(path: *const c_char, reservoir_out: *mut *mut Reserv
     match unsafe { std::ffi::CStr::from_ptr(path) }.to_str() {
         Ok(path) => {
             let boxed = Box::new(ReservoirImpl::new(path));
-            *reservoir_out = Box::leak(boxed) as *mut ReservoirImpl;
+            *reservoir_out = Box::into_raw(boxed);
             0
         }
         Err(_) => 30_000,
@@ -112,17 +112,18 @@ pub unsafe fn reservoir_new(path: *const c_char, reservoir_out: *mut *mut Reserv
 pub unsafe fn reservoir_reserve(
     reservoir: *mut ReservoirImpl,
     size: u32,
-    handle_out: *mut *mut c_void,
+    handle_out: *mut *mut WriteHandleImpl,
 ) -> i32 {
     let reservoir = unsafe { &*(reservoir) };
+    *handle_out = null_mut();
     match reservoir.reserve(size) {
         Ok(handle) => {
             let handle = WriteHandleImpl {
                 reservoir_handle: handle,
                 runtime_handle: reservoir.runtime_handle(),
             };
-            let handle_ptr = Box::leak(Box::new(handle));
-            unsafe { *handle_out = handle_ptr as *mut _ as *mut c_void };
+            let handle_ptr = Box::into_raw(Box::new(handle));
+            unsafe { *handle_out = handle_ptr };
             0
         }
         Err(err) => result_into_error_no(err),
@@ -209,9 +210,9 @@ pub unsafe fn reservoir_handle_commit(handle: *mut WriteHandleImpl) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe fn reservoir_handle_free(handle: *mut c_void) {
+pub unsafe fn reservoir_handle_free(handle: *mut WriteHandleImpl) {
     if !handle.is_null() {
-        let _ = Box::from_raw(handle as *mut WriteHandleImpl);
+        let _ = Box::<WriteHandleImpl>::from_raw(handle);
     }
 }
 
@@ -227,7 +228,7 @@ pub unsafe fn reservoir_make_buffer(buffer_out: *mut *const ReadBuffer) {
     let boxed = Box::new(ReadBuffer {
         mem_buffer: Vec::with_capacity(ONE_MEBIBYTE as usize),
     });
-    *buffer_out = Box::leak(boxed) as *mut ReadBuffer;
+    *buffer_out = Box::into_raw(boxed);
 }
 
 #[no_mangle]
