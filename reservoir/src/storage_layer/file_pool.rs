@@ -1,10 +1,10 @@
 use crate::{ReservoirError, ReservoirResult, StorageLayer, StorageWriter, TransactionId};
 use range_alloc::RangeAllocator;
 use std::cmp::min;
-use std::fs::File;
+use std::fs::{File, Permissions};
 use std::io::ErrorKind;
 use std::mem::size_of;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -88,9 +88,11 @@ impl FilePool {
 
     pub fn open(path: &Path, file_count: usize, file_size: u64) -> std::io::Result<Self> {
         if !path.exists() {
+            info!("Creating FilePool at {path:?}");
             Self::create(path, file_count, file_size)?;
         }
 
+        info!("Opening FilePool at {path:?}");
         // Check if the directory is empty
         if std::fs::read_dir(path)?.count() > file_count {
             return Err(std::io::Error::new(
@@ -145,6 +147,7 @@ impl FilePool {
         // Create the dir & files
         info!("Creating pool dir {path:?}");
         std::fs::create_dir_all(path)?;
+        std::fs::set_permissions(path, Permissions::from_mode(0o777))?;
 
         // Optimistically, check the amount of available space.
         // This isn't perfect, but better than failing halfway through.
@@ -157,6 +160,7 @@ impl FilePool {
 
         for i in 0..file_count {
             let file = File::create(path.join(Self::file_name(i)))?;
+            file.set_permissions(Permissions::from_mode(0o777))?;
             file.set_len(file_size)?;
             file.sync_all()?;
         }
@@ -203,7 +207,7 @@ pub struct FileSlice {
 
 impl StorageWriter for FileSlice {
     fn payload_size(&self) -> u32 {
-        self.size
+        self.size - (size_of::<TransactionId>() + size_of::<u32>()) as u32
     }
 }
 
@@ -239,13 +243,19 @@ impl AsyncRead for FileSliceReader {
         if remaining_bytes == 0 {
             return Poll::Ready(Ok(()));
         }
-        let available_buffer = min(buf.remaining(), remaining_bytes);
-        let read_bytes = self.file_buffer.file.read_at(
-            &mut buf.initialize_unfilled()[..available_buffer],
+
+        // Copy the bytes into a local read buffer
+        let mut temp_buf = [0u8; 4096];
+        let bytes_to_read = min(buf.remaining(), min(remaining_bytes, temp_buf.len()));
+        self.file_buffer.file.read_exact_at(
+            &mut temp_buf[..bytes_to_read],
             self.offset + self.read_bytes as u64,
         )?;
-        self.read_bytes += read_bytes;
-        buf.advance(read_bytes);
+
+        // Copy the bytes into the output buffer
+        buf.put_slice(&mut temp_buf[..bytes_to_read]);
+        self.read_bytes += bytes_to_read;
+
         Poll::Ready(Ok(()))
     }
 }
@@ -337,7 +347,7 @@ impl AsyncWrite for FileSlice {
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         // TODO: offload this more efficiently
-        self.file_buffer.file.sync_data()?;
+        // self.file_buffer.file.sync_data()?;
         Poll::Ready(Ok(()))
     }
 

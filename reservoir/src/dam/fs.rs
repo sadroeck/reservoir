@@ -32,20 +32,16 @@ pub struct DamIterator {
 
 impl DamIterator {
     pub fn new(dam_file: &Path) -> io::Result<Self> {
-        // Open dam file read-only.
         assert!(dam_file.exists(), "Dam log does not exist");
-        let dam_file = File::options()
-            .read(true)
-            .open(dam_file)
-            .expect("Could not open dam file for reading");
-        let mut s = Self {
+
+        // Open dam file read-only.
+        let dam_file = File::open(dam_file)?;
+        Ok(Self {
             buf: vec![0u8; 128 * size_of::<SerializedTransaction>()],
             dam_file,
             buf_idx: 128,
             file_offset: 0,
-        };
-        s.fill_id_buffer();
-        Ok(s)
+        })
     }
 
     pub fn reset(&mut self, offset: u64) {
@@ -55,13 +51,6 @@ impl DamIterator {
 
     /// Read the next buffer's worth of IDs
     fn fill_id_buffer(&mut self) {
-        // let read_bytes = self.dam_file.read(&mut self.buf).unwrap_or_else(|e| {
-        //     if e.kind() == io::ErrorKind::WouldBlock {
-        //         0
-        //     } else {
-        //         panic!("Could not read from dam {e}");
-        //     }
-        // });
         self.dam_file
             .read_exact_at(&mut self.buf, self.file_offset)
             .expect("Could not read from dam file");
@@ -103,9 +92,10 @@ impl Iterator for DamIterator {
             }
         }
 
+        let txn_offset = self.file_offset;
         self.file_offset += size_of::<SerializedTransaction>() as u64;
         self.buf_idx += 1;
-        Some((txn, self.file_offset))
+        Some((txn, txn_offset))
     }
 }
 
@@ -223,10 +213,7 @@ impl DamLog {
             (file, current_offset)
         } else {
             let mut file = File::options().write(true).create(true).open(log_file)?;
-            // file.set_len(LOG_FILE_SIZE as u64)?;
-            for _ in 0..LOG_FILE_SIZE / 4096 {
-                file.write_all(&[255u8; 4096])?;
-            }
+            file.set_len(LOG_FILE_SIZE as u64)?;
             file.flush()?;
             file.sync_all()?;
             info!("Created dam file at {log_file:?}:0");

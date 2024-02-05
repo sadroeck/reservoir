@@ -2,15 +2,17 @@
 
 use reservoir::{
     DamIterator, DamLog, Event, FilePool, FileSlice, FlushStrategy, Reservoir, ReservoirError,
-    ReservoirResult, SyncDamFlusher, TransactionId, WriteHandle,
+    ReservoirResult, SerializedTransaction, SyncDamFlusher, TransactionId, WriteHandle,
 };
 use std::ffi::{c_char, c_void};
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::runtime::{Handle, Runtime};
+use tracing::error;
 
 const ONE_MEBIBYTE: u64 = 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_millis(5);
@@ -30,6 +32,7 @@ impl ReservoirImpl {
     thread_local! {
         pub static RUNTIME: Runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     }
+
     fn new(path: &str) -> Self {
         let pool_path = Path::new(path).join("./pool/");
         let storage = FilePool::open(&pool_path, 8, 32 * ONE_MEBIBYTE)
@@ -95,6 +98,17 @@ pub struct IterHandle {
     /// The maximum size of a transaction is 1 MiB.
     /// Note: This is to offer mmap type behavior to any readers.
     pub mem_buffer: Vec<u8>,
+}
+
+#[no_mangle]
+pub unsafe fn reservoir_init(enable_logging: bool) {
+    if enable_logging {
+        tracing_subscriber::fmt()
+            .with_level(true)
+            .with_target(true)
+            .with_thread_ids(true)
+            .init();
+    }
 }
 
 #[no_mangle]
@@ -258,7 +272,7 @@ pub unsafe fn reservoir_iter_next(
         Some((serialized_txn, file_offset)) => {
             *tx_id = serialized_txn.id.into();
             *size = serialized_txn.size as usize;
-            *lsn = file_offset;
+            *lsn = file_offset / size_of::<SerializedTransaction>() as u64;
             *is_done = false;
             reservoir
                 .read_into_buffer_blocking(serialized_txn.id, &mut iter_handle.mem_buffer)
@@ -285,6 +299,7 @@ pub unsafe fn reservoir_iter_free(iter: *mut DamIterator) {
 
 #[inline]
 fn result_into_error_no(err: ReservoirError) -> i32 {
+    error!("Reservoir error: {:?}", err);
     match err {
         ReservoirError::IoError(err) => err.raw_os_error().map(|e| e + 10_000).unwrap_or(-1),
         ReservoirError::NoSuchTransaction(_) => 20_000,

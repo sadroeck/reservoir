@@ -79,7 +79,8 @@ impl<const N: usize> FixedBufferWriter<N> {
             todo!("file_sync_range")
         } else {
             self.log.file.flush()?;
-            self.log.file.sync_data()?;
+            // TODO: Hangs in memsqld saverbp
+            // self.log.file.sync_data()?;
         }
 
         // Inform any transactions waiting for flush confirmation
