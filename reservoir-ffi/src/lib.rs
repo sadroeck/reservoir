@@ -5,7 +5,7 @@ use reservoir::{
     ReservoirResult, SyncDamFlusher, TransactionId, WriteHandle,
 };
 use std::ffi::{c_char, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,7 @@ pub struct ReservoirImpl {
     dam_thread: Option<std::thread::JoinHandle<()>>,
     /// The dam log.
     /// The dam log is used to store transaction IDs and their corresponding checksums in order of commit.
-    dam_log: DamLog,
+    dam_path: PathBuf,
 }
 
 impl ReservoirImpl {
@@ -31,11 +31,12 @@ impl ReservoirImpl {
         pub static RUNTIME: Runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     }
     fn new(path: &str) -> Self {
-        let storage = FilePool::open(Path::new(path), 8, 32 * ONE_MEBIBYTE)
-            .expect("Could not open file pool");
-        let dam_log = DamLog::new(Path::new("./dam.log")).expect("Could not open/create Dam log");
-        let dam_for_thread = dam_log.clone();
-        let dam = SyncDamFlusher::new(dam_for_thread, FlushStrategy::Interval(SYNC_INTERVAL))
+        let pool_path = Path::new(path).join("./pool/");
+        let storage = FilePool::open(&pool_path, 8, 32 * ONE_MEBIBYTE)
+            .unwrap_or_else(|e| panic!("Could not open file pool at {pool_path:?}: {e}"));
+        let dam_path = Path::new(path).join("dam.log");
+        let dam_log = DamLog::new(&dam_path).expect("Could not open/create Dam log");
+        let dam = SyncDamFlusher::new(dam_log, FlushStrategy::Interval(SYNC_INTERVAL))
             .expect("Could not create dam flusher");
         let start_tx_id = dam.highest_committed_transaction_id();
         let (dam_thread, dam_handle) = dam.spawn_thread();
@@ -47,7 +48,7 @@ impl ReservoirImpl {
         Self {
             reservoir,
             dam_thread: Some(dam_thread),
-            dam_log,
+            dam_path,
         }
     }
 
@@ -89,7 +90,7 @@ pub struct ReadBuffer {
 }
 
 pub struct IterHandle {
-    pub iter: DamIterator<'static>,
+    pub iter: DamIterator,
     /// Buffer to deserialize any reads from the reservoir
     /// The maximum size of a transaction is 1 MiB.
     /// Note: This is to offer mmap type behavior to any readers.
@@ -219,7 +220,8 @@ pub unsafe fn reservoir_handle_free(handle: *mut WriteHandleImpl) {
 #[no_mangle]
 pub unsafe fn reservoir_get_iter(reservoir: *mut ReservoirImpl, iter_out: *mut *const c_void) {
     let reservoir = &mut *(reservoir);
-    let iter = reservoir.dam_log.clone().owned_iter();
+    let iter = DamIterator::new(&reservoir.dam_path)
+        .unwrap_or_else(|e| panic!("Could not open dam iter: {e}"));
     *iter_out = Box::into_raw(Box::new(iter)) as *mut c_void
 }
 
@@ -285,6 +287,6 @@ pub unsafe fn reservoir_iter_free(iter: *mut DamIterator) {
 fn result_into_error_no(err: ReservoirError) -> i32 {
     match err {
         ReservoirError::IoError(err) => err.raw_os_error().map(|e| e + 10_000).unwrap_or(-1),
-        ReservoirError::NoSuchSegment(_) => 20_000,
+        ReservoirError::NoSuchTransaction(_) => 20_000,
     }
 }

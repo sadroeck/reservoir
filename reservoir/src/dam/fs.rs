@@ -3,12 +3,13 @@ use crate::utils::{FixedBufferWriter, FlushNotifier};
 use crate::{DamControl, ReservoirResult, TransactionId};
 use flume::{Receiver, TryRecvError};
 use futures_util::Stream;
-use std::borrow::Cow;
 use std::fs::File;
 use std::future::Future;
+use std::io;
+use std::io::Write;
 use std::mem::size_of;
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -22,65 +23,100 @@ const LOG_FILE_SIZE: usize = 1_000_000 * size_of::<SerializedTransaction>();
 const LOG_BUFFER_SIZE: usize = MAX_PENDING_TRANSACTIONS * size_of::<SerializedTransaction>();
 
 /// Utility to scan the contents of the Dam log
-pub struct DamIterator<'a> {
-    buf: [u8; 128 * size_of::<SerializedTransaction>()],
-    dam: Cow<'a, DamLog>,
+pub struct DamIterator {
+    buf: Vec<u8>,
+    dam_file: File,
     buf_idx: usize,
     file_offset: u64,
 }
 
-impl<'a> DamIterator<'a> {
-    pub fn reset(&mut self, offset: u64) -> Self {
-        Self {
-            buf: [0u8; 128 * size_of::<SerializedTransaction>()],
-            dam: self.dam.clone(),
+impl DamIterator {
+    pub fn new(dam_file: &Path) -> io::Result<Self> {
+        // Open dam file read-only.
+        assert!(dam_file.exists(), "Dam log does not exist");
+        let dam_file = File::options()
+            .read(true)
+            .open(dam_file)
+            .expect("Could not open dam file for reading");
+        let mut s = Self {
+            buf: vec![0u8; 128 * size_of::<SerializedTransaction>()],
+            dam_file,
             buf_idx: 128,
-            file_offset: offset,
-        }
+            file_offset: 0,
+        };
+        s.fill_id_buffer();
+        Ok(s)
+    }
+
+    pub fn reset(&mut self, offset: u64) {
+        self.file_offset = offset;
+        self.buf_idx = 128;
+    }
+
+    /// Read the next buffer's worth of IDs
+    fn fill_id_buffer(&mut self) {
+        // let read_bytes = self.dam_file.read(&mut self.buf).unwrap_or_else(|e| {
+        //     if e.kind() == io::ErrorKind::WouldBlock {
+        //         0
+        //     } else {
+        //         panic!("Could not read from dam {e}");
+        //     }
+        // });
+        self.dam_file
+            .read_exact_at(&mut self.buf, self.file_offset)
+            .expect("Could not read from dam file");
+        self.buf_idx = 0;
+    }
+
+    #[inline]
+    fn get_current_txn(&self) -> SerializedTransaction {
+        SerializedTransaction::from_bytes(
+            &self.buf[self.buf_idx * size_of::<SerializedTransaction>()
+                ..(self.buf_idx + 1) * size_of::<SerializedTransaction>()],
+        )
     }
 }
 
-impl<'a> Iterator for DamIterator<'a> {
+impl Iterator for DamIterator {
     /// Pair of [`SerializedTransaction`] and the offset in the file where it was found.
     type Item = (SerializedTransaction, u64);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.buf_idx == 128 {
-            // We've reached the end of the file
+            // We've reached the end of the buffer
             if self.file_offset == LOG_FILE_SIZE as u64 {
+                // We've reached the end of the file
                 return None;
             }
-            // Read the next buffer's worth of IDs
-            self.dam
-                .file
-                .read_exact_at(&mut self.buf, self.file_offset)
-                .ok()?;
-            self.buf_idx = 0;
+            self.fill_id_buffer();
         }
 
-        let txn = SerializedTransaction::from_bytes(
-            &self.buf[self.buf_idx * size_of::<SerializedTransaction>()
-                ..(self.buf_idx + 1) * size_of::<SerializedTransaction>()],
-        );
+        let mut txn = self.get_current_txn();
         if txn.is_invalid() {
-            return None;
+            // Re-full the buffer, to see if there's any new content
+            self.fill_id_buffer();
+
+            // Try again with the latest buffer
+            txn = self.get_current_txn();
+            if txn.is_invalid() {
+                return None;
+            }
         }
 
-        let res = Some((txn, self.file_offset));
         self.file_offset += size_of::<SerializedTransaction>() as u64;
         self.buf_idx += 1;
-        res
+        Some((txn, self.file_offset))
     }
 }
 
-pub struct DamStream<'a> {
-    iter: DamIterator<'a>,
+pub struct DamStream {
+    iter: DamIterator,
     dam_offset: Arc<AtomicU64>,
     stream_offset: u64,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
-impl<'a> DamStream<'a> {
+impl DamStream {
     fn needs_sleep(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> bool {
         // Check if we're still waiting for new dam content to arrive
         if let Some(ref mut sleep) = self.sleep.as_mut() {
@@ -98,9 +134,9 @@ impl<'a> DamStream<'a> {
     }
 }
 
-impl<'a> Unpin for DamStream<'a> {}
+impl Unpin for DamStream {}
 
-impl Stream for DamStream<'_> {
+impl Stream for DamStream {
     type Item = (TransactionId, u64);
 
     fn poll_next(
@@ -144,30 +180,19 @@ impl Stream for DamStream<'_> {
 
 #[derive(Debug)]
 pub struct DamLog {
+    /// The path to the log file.
+    pub path: PathBuf,
     /// The underlying file handle.
     pub file: File,
     /// The latest offset that's been f-synced.
     pub current_offset: Arc<AtomicU64>,
 }
 
-impl Clone for DamLog {
-    fn clone(&self) -> Self {
-        Self {
-            file: self.file.try_clone().unwrap(),
-            current_offset: self.current_offset.clone(),
-        }
-    }
-}
-
 impl DamLog {
     pub fn new(log_file: &Path) -> ReservoirResult<Self> {
         let (file, current_offset) = if log_file.exists() {
             // If the file already exists, just verify the size and open it
-            let file = File::options()
-                .read(true)
-                .write(true)
-                .append(false)
-                .open(log_file)?;
+            let file = File::options().read(true).write(true).open(log_file)?;
             let current_file_size = file.metadata()?.len();
             if current_file_size != LOG_FILE_SIZE as u64 {
                 return Err(std::io::Error::new(
@@ -197,32 +222,29 @@ impl DamLog {
             info!("Opened dam file at {log_file:?}:{current_offset}");
             (file, current_offset)
         } else {
-            let file = File::create(log_file)?;
-            file.set_len(LOG_FILE_SIZE as u64)?;
+            let mut file = File::options().write(true).create(true).open(log_file)?;
+            // file.set_len(LOG_FILE_SIZE as u64)?;
+            for _ in 0..LOG_FILE_SIZE / 4096 {
+                file.write_all(&[255u8; 4096])?;
+            }
+            file.flush()?;
             file.sync_all()?;
             info!("Created dam file at {log_file:?}:0");
             (file, 0)
         };
 
         Ok(Self {
+            path: log_file.to_path_buf(),
             file,
             current_offset: Arc::new(AtomicU64::new(current_offset)),
         })
     }
 
-    pub fn iter(&self) -> DamIterator<'_> {
+    pub fn iter(&self) -> DamIterator {
+        let dam_file = File::open(&self.path).expect("Could not open dam file");
         DamIterator {
-            buf: [0u8; 128 * size_of::<SerializedTransaction>()],
-            dam: Cow::Borrowed(self),
-            buf_idx: 128,
-            file_offset: 0,
-        }
-    }
-
-    pub fn owned_iter(self) -> DamIterator<'static> {
-        DamIterator {
-            buf: [0u8; 128 * size_of::<SerializedTransaction>()],
-            dam: Cow::Owned(self),
+            buf: vec![0u8; 128 * size_of::<SerializedTransaction>()],
+            dam_file,
             buf_idx: 128,
             file_offset: 0,
         }

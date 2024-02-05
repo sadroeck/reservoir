@@ -7,8 +7,8 @@ pub enum ReservoirError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
-    #[error("Unknown segment {0}")]
-    NoSuchSegment(TransactionId),
+    #[error("Unknown transaction {0}")]
+    NoSuchTransaction(TransactionId),
 }
 
 /// A specialized `Result` type for this crate's storage operations.

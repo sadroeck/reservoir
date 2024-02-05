@@ -40,8 +40,9 @@ where
         // We need to store the payload + txn size + the transaction ID + the CRC checksum
         let buffer_size =
             size + (size_of::<u32>() + size_of::<TransactionId>() + size_of::<u32>()) as u32;
-        let data_writer = self.storage.write_transaction(buffer_size).await?;
+        // TODO: The storage layer should provide the transaction ID, for now just pass it on.
         let tx_id = TransactionId(self.next_tx_id.fetch_add(1, Ordering::AcqRel));
+        let data_writer = self.storage.write_transaction(tx_id, buffer_size).await?;
         Ok(WriteHandle::new(
             tx_id,
             data_writer,

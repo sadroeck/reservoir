@@ -18,7 +18,11 @@ pub trait StorageLayer: Send + Sync + 'static {
 
     /// Retrieves a write buffer of the specified size.
     /// TODO: Does this need to be async??
-    async fn write_transaction(&self, size: u32) -> ReservoirResult<Self::Writer>;
+    async fn write_transaction(
+        &self,
+        transaction_id: TransactionId,
+        size: u32,
+    ) -> ReservoirResult<Self::Writer>;
 
     async fn read_transaction(&self, segment_id: TransactionId) -> ReservoirResult<Self::Reader>;
 }

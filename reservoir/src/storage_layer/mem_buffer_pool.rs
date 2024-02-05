@@ -43,7 +43,8 @@ impl MemBufferPool {
     /// Attempts to allocate a segment of the specified size.
     /// Returns `None` if the pool is exhausted.
     /// The returned segment is valid until the pool is dropped.
-    pub fn try_alloc_segment(&self, size: u32) -> Option<PoolSegment> {
+    pub fn try_alloc_pool_slice(&self, _txn_id: TransactionId, size: u32) -> Option<PoolSegment> {
+        // TODO: Store txn_id in the segment
         let mut alloc = self.alloc.lock().unwrap();
         let range = alloc.alloc.allocate_range(size as usize).ok()?;
         Some(PoolSegment {
@@ -221,9 +222,13 @@ impl StorageLayer for MemBufferPool {
 
     /// Retrieves a write buffer of the specified size.
     /// Note: This will retry until a buffer becomes available, with a 1ms delay between attempts.
-    async fn write_transaction(&self, size: u32) -> ReservoirResult<Self::Writer> {
+    async fn write_transaction(
+        &self,
+        txn_id: TransactionId,
+        size: u32,
+    ) -> ReservoirResult<Self::Writer> {
         loop {
-            match self.try_alloc_segment(size) {
+            match self.try_alloc_pool_slice(txn_id, size) {
                 Some(segment) => return Ok(segment),
                 None => {
                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -258,7 +263,7 @@ impl StorageLayer for MemBufferPool {
                 bytes_read: 0,
             });
         }
-        Err(ReservoirError::NoSuchSegment(segment_id))
+        Err(ReservoirError::NoSuchTransaction(segment_id))
     }
 }
 
@@ -275,7 +280,7 @@ mod test {
         let payload = b"Hello world";
         {
             let mut writer = pool
-                .write_transaction(payload.len() as u32)
+                .write_transaction(TransactionId(1), payload.len() as u32)
                 .await
                 .expect("Could not allocate buffer");
             writer
@@ -292,9 +297,9 @@ mod test {
         let pool = MemBufferPool::new(10 * payload.len());
         {
             let mut segments = vec![];
-            for _ in 0..10 {
+            for i in 0..10 {
                 let mut writer = pool
-                    .write_transaction(payload.len() as u32)
+                    .write_transaction(TransactionId(i), payload.len() as u32)
                     .await
                     .expect("Could not allocate buffer");
                 writer
@@ -311,15 +316,18 @@ mod test {
     async fn test_multiple_buffers_saturated() {
         let pool = MemBufferPool::new(50);
         let mut segments = vec![];
-        for _ in 0..5 {
+        for i in 0..5 {
             let writer = pool
-                .write_transaction(10)
+                .write_transaction(TransactionId(i), 10)
                 .await
                 .expect("Could not allocate buffer");
             segments.push(writer);
         }
 
         // We should not be able to allocate another segment
-        assert!(pool.write_transaction(10).now_or_never().is_none())
+        assert!(pool
+            .write_transaction(TransactionId(11), 10)
+            .now_or_never()
+            .is_none())
     }
 }
