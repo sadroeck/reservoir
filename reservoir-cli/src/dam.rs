@@ -29,9 +29,9 @@ fn print_from_iter(pretty: bool, tail: bool, mut iter: DamIterator) {
     loop {
         while let Some((txn, offset)) = iter.next() {
             if pretty {
-                info!("offset={offset} Transaction: {:#?}", txn);
+                info!("offset={offset} {txn:#?}");
             } else {
-                info!("offset={offset} Transaction: {txn:?}");
+                info!("offset={offset} {txn:?}");
             }
         }
 
