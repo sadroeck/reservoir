@@ -1,3 +1,3 @@
 [workspace]
-members = ["reservoir", "reservoir-ffi"]
+members = ["reservoir", "reservoir-cli", "reservoir-ffi"]
 resolver = "2"
